@@ -83,7 +83,7 @@ Key Repeat 방지를 위해 `_lanePressed[]` Boolean Array로 KeyDown/KeyUp Stat
 
 ---
 
-## 핵심 기능 상세
+## 상세 기능
 
 ### 1. Time-Based Judgment System
 

@@ -1,0 +1,50 @@
+C:\Users\abc20\Desktop\rhythm_game\bin\Debug\net9.0-windows\game start.exe
+C:\Users\abc20\Desktop\rhythm_game\bin\Debug\net9.0-windows\game start.deps.json
+C:\Users\abc20\Desktop\rhythm_game\bin\Debug\net9.0-windows\game start.runtimeconfig.json
+C:\Users\abc20\Desktop\rhythm_game\bin\Debug\net9.0-windows\game start.dll
+C:\Users\abc20\Desktop\rhythm_game\bin\Debug\net9.0-windows\game start.pdb
+C:\Users\abc20\Desktop\rhythm_game\obj\Debug\net9.0-windows\RhythmGame.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\abc20\Desktop\rhythm_game\obj\Debug\net9.0-windows\RhythmGame.AssemblyInfoInputs.cache
+C:\Users\abc20\Desktop\rhythm_game\obj\Debug\net9.0-windows\RhythmGame.AssemblyInfo.cs
+C:\Users\abc20\Desktop\rhythm_game\obj\Debug\net9.0-windows\RhythmGame.csproj.CoreCompileInputs.cache
+C:\Users\abc20\Desktop\rhythm_game\obj\Debug\net9.0-windows\game start.dll
+C:\Users\abc20\Desktop\rhythm_game\obj\Debug\net9.0-windows\refint\game start.dll
+C:\Users\abc20\Desktop\rhythm_game\obj\Debug\net9.0-windows\game start.pdb
+C:\Users\abc20\Desktop\rhythm_game\obj\Debug\net9.0-windows\RhythmGame.genruntimeconfig.cache
+C:\Users\abc20\Desktop\rhythm_game\obj\Debug\net9.0-windows\ref\game start.dll
+C:\Users\abc20\Desktop\rhythm_game\bin\Debug\net9.0-windows\NoteLane\default.bms
+C:\Users\abc20\Desktop\rhythm_game\bin\Debug\net9.0-windows\Songs\InGameBGM\Soldered Thunder.wav
+C:\Users\abc20\Desktop\rhythm_game\bin\Debug\net9.0-windows\Songs\MainScreenBGM\Game_main_screen_bgm.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\NoteLane\default.bms
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\MainScreenBGM\Game_main_screen_bgm.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\Akina Drift.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\bastard life.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\Dark Tunnel Pattern.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\Dust Pooling Circuit.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\illusion.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\invailed life.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\irish Cover.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\Killing with us.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\Mochiron.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\No one else dying.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\No One Else.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\ruin-awake.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\Running in Driving Root.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\Rust Hover.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\Soldered Thunder.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\Songs\InGameBGM\Original\誰もいない.wav
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\game start.exe
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\game start.deps.json
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\game start.runtimeconfig.json
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\game start.dll
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\bin\Debug\net9.0-windows\game start.pdb
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\RhythmGame.GeneratedMSBuildEditorConfig.editorconfig
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\RhythmGame.AssemblyInfoInputs.cache
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\RhythmGame.AssemblyInfo.cs
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\RhythmGame.csproj.CoreCompileInputs.cache
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\RhythmGame.sourcelink.json
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\game start.dll
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\refint\game start.dll
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\game start.pdb
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\RhythmGame.genruntimeconfig.cache
+C:\SynologyDrive\Github_Project\continuous-project\MuWorld\obj\Debug\net9.0-windows\ref\game start.dll

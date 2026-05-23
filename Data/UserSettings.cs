@@ -12,6 +12,13 @@ internal sealed class UserSettings
     public bool VSyncEnabled { get; set; }
     public bool DarkModeEnabled { get; set; }
     public int AudioOffsetMs { get; set; }
+    public int LaneModeIndex { get; set; }
+    public int SplashDurationMs { get; set; } = 1600;
+    public bool HighContrastEnabled { get; set; }
+    public int ColorVisionMode { get; set; }
+    public bool ReducedMotionEnabled { get; set; }
+    public int RenderQualityMode { get; set; } = 1;
+    public string LastSavedUtc { get; set; } = string.Empty;
 }
 
 internal sealed class UserSettingsStore
@@ -44,6 +51,7 @@ internal sealed class UserSettingsStore
 
     public void Save(UserSettings settings)
     {
+        settings.LastSavedUtc = DateTime.UtcNow.ToString("O");
         Directory.CreateDirectory(Path.GetDirectoryName(_saveFilePath)!);
         string json = JsonSerializer.Serialize(settings, JsonOptions);
         File.WriteAllText(_saveFilePath, json);

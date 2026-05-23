@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 
 namespace RhythmGame;
@@ -6,9 +7,30 @@ public sealed partial class GameForm
 {
     private const int SongRowsPerPage = 5;
 
-    private sealed record SongEntry(string Title, string Artist, int ArtworkStyle, string FilePath);
+    private sealed record SongEntry(
+        string SongId,
+        string Title,
+        string Artist,
+        int ArtworkStyle,
+        string FilePath,
+        string Format,
+        float DurationSeconds,
+        float Bpm,
+        int HighestScore)
+    {
+        public SongMetadata ToMetadata() => new()
+        {
+            SongId = SongId,
+            Title = Title,
+            Artist = Artist,
+            Format = Format,
+            DurationSeconds = DurationSeconds,
+            Bpm = Bpm,
+        };
+    }
 
     private static SongEntry[]? _cachedSongList;
+    private static readonly SongDataStore SongData = new();
 
     private static SongEntry[] DiscoverSongs()
     {
@@ -27,9 +49,22 @@ public sealed partial class GameForm
         var songs = new SongEntry[audioFiles.Length];
         for (int i = 0; i < audioFiles.Length; i++)
         {
-            string name = Path.GetFileNameWithoutExtension(audioFiles[i]);
+            SongMetadata metadata = AudioFileCatalog.ReadSongMetadata(audioFiles[i]);
+            SongData.UpsertMetadata(metadata);
+            int highestScore = SongData.TryGetScore(metadata.SongId)?.HighestScore ?? 0;
+            string name = metadata.Title;
             string artist = $"InGameBGM · {AudioFileCatalog.GetFormatLabel(audioFiles[i])}";
-            songs[i] = new SongEntry(name, artist, i % 6, audioFiles[i]);
+            artist = metadata.Artist;
+            songs[i] = new SongEntry(
+                metadata.SongId,
+                name,
+                artist,
+                i % 6,
+                audioFiles[i],
+                metadata.Format,
+                metadata.DurationSeconds,
+                metadata.Bpm,
+                highestScore);
         }
 
         _cachedSongList = songs;
@@ -38,6 +73,29 @@ public sealed partial class GameForm
 
     /// <summary>곡 목록 캐시를 무효화한다 (새 WAV 추가 시).</summary>
     private static void InvalidateSongCache() => _cachedSongList = null;
+
+    private static string BuildSongListMetadata(SongEntry song)
+    {
+        string duration = FormatSongDuration(song.DurationSeconds);
+        string bpm = song.Bpm > 0f ? $"BPM {song.Bpm:F0}" : "BPM --";
+        return $"{song.Artist} | {song.Format} | {duration} | {bpm}";
+    }
+
+    private static string BuildSongPreviewMetadata(SongEntry song)
+    {
+        string duration = FormatSongDuration(song.DurationSeconds);
+        string bpm = song.Bpm > 0f ? $"BPM {song.Bpm:F0}" : "BPM --";
+        return $"{song.Artist} | {song.Format} | {duration} | {bpm} | Best {song.HighestScore:N0}";
+    }
+
+    private static string FormatSongDuration(float seconds)
+    {
+        if (seconds <= 0f)
+            return "--:--";
+
+        int totalSeconds = (int)Math.Round(seconds);
+        return $"{totalSeconds / 60:00}:{totalSeconds % 60:00}";
+    }
 
     // 모든 난이도에서 동일한 곡 목록을 사용 (채보만 다름)
     private static readonly SongEntry[][] SongPools = [[], [], []];
@@ -88,11 +146,11 @@ public sealed partial class GameForm
 
         Rectangle rightInfoTop = GetSongPreviewTopTextBounds(panel);
         g.DrawString(selectedSong?.Title ?? "No Result", rowTitleFont, rowTitleBrush, rightInfoTop.Left, rightInfoTop.Top);
-        g.DrawString(selectedSong?.Artist ?? "Try another keyword", artistFont, artistBrush, rightInfoTop.Left, rightInfoTop.Top + ScaleY(43f));
+        g.DrawString(selectedSong is null ? "Try another keyword" : BuildSongPreviewMetadata(selectedSong), artistFont, artistBrush, rightInfoTop.Left, rightInfoTop.Top + ScaleY(43f));
 
         Rectangle bottomInfo = GetSongPreviewBottomTextBounds(panel);
         g.DrawString(selectedSong?.Title ?? "No Result", rowTitleFont, rowTitleBrush, bottomInfo.Left, bottomInfo.Top);
-        g.DrawString(selectedSong?.Artist ?? "Try another keyword", artistFont, artistBrush, bottomInfo.Left, bottomInfo.Top + ScaleY(42f));
+        g.DrawString(selectedSong is null ? "Try another keyword" : BuildSongPreviewMetadata(selectedSong), artistFont, artistBrush, bottomInfo.Left, bottomInfo.Top + ScaleY(42f));
 
         DrawSongPlayButton(g, GetSongPlayButtonBounds(panel), _hoverSongPlayIndex == 1, playFont);
     }
@@ -254,7 +312,7 @@ public sealed partial class GameForm
 
             DrawSmallSongNote(g, iconCircle, selected ? Color.FromArgb(144, 118, 205) : Color.FromArgb(152, 143, 202));
             g.DrawString(song.Title, titleFont, titleBrush, rowBounds.Left + ScaleX(85f), rowBounds.Top + ScaleY(15f));
-            g.DrawString(song.Artist, artistFont, artistBrush, rowBounds.Left + ScaleX(85f), rowBounds.Top + ScaleY(47f));
+            g.DrawString(BuildSongListMetadata(song), artistFont, artistBrush, rowBounds.Left + ScaleX(85f), rowBounds.Top + ScaleY(47f));
 
             Rectangle chevron = Rectangle.Round(new RectangleF(rowBounds.Right - ScaleX(34f), rowBounds.Top + ScaleY(26f), ScaleX(12f), ScaleY(20f)));
             using var cp = new Pen(hovered || selected ? Color.FromArgb(127, 155, 208) : Color.FromArgb(176, 187, 207), Math.Max(2f, ScaleY(2.8f))) { StartCap = LineCap.Round, EndCap = LineCap.Round };
@@ -550,7 +608,8 @@ public sealed partial class GameForm
         string qNorm = NormalizeForSearch(query);
 
         bool basicMatch = song.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                          song.Artist.Contains(query, StringComparison.OrdinalIgnoreCase);
+                          song.Artist.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                          song.Format.Contains(query, StringComparison.OrdinalIgnoreCase);
         bool normalizedMatch = qNorm.Length > 0 &&
                                (NormalizeForSearch(song.Title).Contains(qNorm) ||
                                 NormalizeForSearch(song.Artist).Contains(qNorm));
@@ -612,6 +671,34 @@ public sealed partial class GameForm
     private bool IsSongSelectInteractive(Point location)
     {
         return GetSongSelectHoverCode(location) >= 0;
+    }
+
+    private void OpenSelectedChartForEditing()
+    {
+        SongEntry? song = GetSelectedSong();
+        if (song is null)
+            return;
+
+        try
+        {
+            string chartPath = ChartGenerator.EnsureUserEditableChart(song.Title, _songSelectDifficultyIndex);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = chartPath,
+                UseShellExecute = true,
+            });
+
+            _feedback = "Chart editor opened";
+            _feedbackTime = DateTime.Now;
+            InvalidateSongCache();
+        }
+        catch
+        {
+            _feedback = "Chart editor failed";
+            _feedbackTime = DateTime.Now;
+        }
+
+        Invalidate();
     }
 
     private void DrawSongPlayButton(Graphics g, Rectangle bounds, bool hovered, Font font)

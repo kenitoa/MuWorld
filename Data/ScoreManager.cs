@@ -23,10 +23,13 @@ public class ScoreManager
     public int GoodCount    { get; private set; }
     public int BadCount     { get; private set; }
     public int MissCount    { get; private set; }
+    public int CurrentMissStreak { get; private set; }
+    public int MaxMissStreak     { get; private set; }
 
     public void AddHit(Judgment judgment)
     {
         Combo++;
+        CurrentMissStreak = 0;
         if (Combo > MaxCombo) MaxCombo = Combo;
 
         Score += JudgmentScores[(int)judgment] * Combo;
@@ -44,6 +47,8 @@ public class ScoreManager
     public void AddMiss()
     {
         MissCount++;
+        CurrentMissStreak++;
+        if (CurrentMissStreak > MaxMissStreak) MaxMissStreak = CurrentMissStreak;
         Combo = 0;
     }
 
@@ -58,5 +63,7 @@ public class ScoreManager
         GoodCount    = 0;
         BadCount     = 0;
         MissCount    = 0;
+        CurrentMissStreak = 0;
+        MaxMissStreak = 0;
     }
 }

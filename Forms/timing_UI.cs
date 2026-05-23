@@ -49,4 +49,25 @@ public sealed partial class GameForm
             bounds.Left + (bounds.Width - textSize.Width) / 2f,
             bounds.Top + (bounds.Height - textSize.Height) / 2f);
     }
+
+    private void DrawLaneModeIndicator(Graphics g, Rectangle playArea)
+    {
+        float boxW = 80f * _layoutScale;
+        float boxH = 36f * _layoutScale;
+        float margin = 10f * _layoutScale;
+        float x = playArea.Left - boxW - margin;
+        float y = playArea.Bottom - boxH - 90f * _layoutScale;
+
+        Rectangle bounds = new((int)x, (int)y, (int)boxW, (int)boxH);
+
+        using var path = CreateRoundedRect(bounds, 6f);
+        g.FillPath(_indicatorBgBrush, path);
+        g.DrawPath(_indicatorBorderPen, path);
+
+        string text = $"{LaneCount}K";
+        SizeF textSize = g.MeasureString(text, _speedFont);
+        g.DrawString(text, _speedFont, _indicatorTextBrush,
+            bounds.Left + (bounds.Width - textSize.Width) / 2f,
+            bounds.Top + (bounds.Height - textSize.Height) / 2f);
+    }
 }

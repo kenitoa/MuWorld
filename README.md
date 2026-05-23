@@ -261,26 +261,24 @@ Progress는 `%LOCALAPPDATA%/RhythmGame/player_progress.json`에 JSON으로 Persi
 
 ## 현재 버전의 구현하지 못한 점
 
-### Gameplay 관련
-- **Lane 수 고정 (4 Lane)**: 5K, 7K 등 다른 Key 모드 미지원
-- **Note Type 단일**: Tap Note만 존재, Long Note / Slide Note 없음
-- **Pause 기능 없음**: 게임 중 일시정지 불가, ESC는 즉시 종료
-- **Speed 변경이 게임 중 미반영**: 게임 시작 전에만 Speed 설정 가능 (실시간 변동 미지원 가능성)
-- **Miss Streak 근사치 계산**: `MissCount / (HitCount + 1)` 공식으로 처리하여 실제 연속 Miss 횟수와 상이
-
-### UI / UX 관련
-- **해상도 대응 한계**: Design Resolution (1152×768)을 기준으로 Scaling하지만, 극단적 종횡비에서의 Layout 보장 없음
-- **Splash Screen 하드코딩**: 타이밍과 Duration이 고정값
-- **접근성(Accessibility) 미지원**: Screen Reader, 고대비 모드, 색약 지원 등 미구현
-- **UI Framework 한계**: WinForms + GDI+ 기반이므로 GPU Accelerated Rendering 미사용
-
 ### Data 관련
-- **곡별 Score Persist 없음**: 게임 세션 종료 시 Score가 Achievement 집계에만 반영, 곡별 최고 점수 기록 미저장
-- **곡 Metadata 부족**: Artist, BPM, 곡 길이 등의 정보가 파일 이름에만 의존
-- **설정 Persist 미확인**: FPS, Volume, Dark Mode 등의 유저 설정이 세션 간 유지되는지 불명확
+- **곡별 Score Persist 완료**: 게임 종료 시 `%LOCALAPPDATA%/RhythmGame/song_data.json`에 곡별 최고 점수, 난이도별 최고 점수, 최고 콤보, 최고 정확도, 플레이 횟수, 마지막 플레이 시각을 저장
+- **곡 Metadata 보강 완료**: 곡 선택 시 Title, Artist, Format, BPM, 곡 길이를 `song_data.json`에 캐시하고, 오디오 파일 옆 `.json` Sidecar Metadata(`title`, `artist`, `bpm`, `durationSeconds`)를 우선 반영
+- **설정 Persist 확인 완료**: FPS, Volume, Dark Mode, Lane Mode, 접근성/렌더링 옵션을 `%LOCALAPPDATA%/RhythmGame/user_settings.json`에 저장하며 `LastSavedUtc`로 마지막 저장 시각을 기록
 
-### Chart Generation 관련
-- **Beat Detection 정확도**: 단순 RMS Energy 기반이므로, 복잡한 장르(EDM Drop, Polyrhythm 등)에서 Beat 감지 정확도 저하 가능
-- **BPM 변속 미지원**: 곡 내 BPM 변화를 처리하지 못함 (단일 BPM 가정)
-- **채보 난이도 자동 조절 없음**: 유저 실력에 따른 Dynamic Difficulty Adjustment 없음
-- **생성된 채보의 수동 편집 불가**: Chart Editor 미구현으로 Auto-Generated 결과만 사용 가능
+## Data 개선 구현 단계
+
+### 1. 곡별 Score 저장소 추가
+- `SongDataStore`를 추가하여 `song_data.json`에 곡별 Score Record를 저장한다.
+- 곡 ID 기준으로 최고 점수, 난이도별 최고 점수, 최고 콤보, 최고 정확도, 플레이 횟수, 마지막 플레이 시각을 관리한다.
+- Analyze 화면의 Highest Score는 전역 Achievement 최고 점수가 아니라 현재 곡의 최고 점수를 기준으로 표시한다.
+
+### 2. 곡 Metadata 수집
+- `AudioFileCatalog.ReadSongMetadata()`가 파일명 기반 Title, 포맷, WAV 길이, 생성된 BMS의 BPM을 읽는다.
+- 오디오 파일과 같은 이름의 `.json` Sidecar가 있으면 `title`, `artist`, `bpm`, `durationSeconds` 값을 우선 적용한다.
+- 곡 선택 화면에는 Artist, Format, Duration, BPM, Best Score를 함께 표시한다.
+
+### 3. 설정 Persist 명시화
+- `UserSettingsStore.Save()`에서 저장 시각 `LastSavedUtc`를 자동 갱신한다.
+- FPS, Volume, Dark Mode, Lane Mode, Splash Duration, High Contrast, Color Vision, Reduced Motion, Render Quality 설정이 세션 간 유지된다.
+---

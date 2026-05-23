@@ -307,7 +307,7 @@ public sealed partial class GameForm
         float height = 68f;
         return Rectangle.Round(new RectangleF(
             ScaleX(DesignWidth / 2f + 160f),
-            ScaleY(755f),
+            ScaleY(674f),
             ScaleX(width), ScaleY(height)));
     }
 

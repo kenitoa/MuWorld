@@ -134,6 +134,24 @@ internal sealed class AudioManager : IDisposable
         }
     }
 
+    public void PauseInGameBgm()
+    {
+        lock (_sync)
+        {
+            if (_mciOpen)
+                mciSendString("pause ingamebgm", null, 0, IntPtr.Zero);
+        }
+    }
+
+    public void ResumeInGameBgm()
+    {
+        lock (_sync)
+        {
+            if (_mciOpen)
+                mciSendString("resume ingamebgm", null, 0, IntPtr.Zero);
+        }
+    }
+
     private bool _mainBgmOpen;
 
     /// <summary>

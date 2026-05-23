@@ -9,6 +9,8 @@ internal static class ChartGenerator
     private const int LaneCount = 4;
     private const string ChartFolderName = "NoteLane";
 
+    private readonly record struct TempoSegment(float Time, float Bpm);
+
     /// <summary>
     /// Songs/InGameBGM 폴더의 오디오 파일을 분석하여 채보를 생성한다.
     /// 현재 자동 분석은 WAV PCM 파일만 지원한다.
@@ -34,6 +36,9 @@ internal static class ChartGenerator
             }
 
             string songName = Path.GetFileNameWithoutExtension(audioPath);
+            var beats = WavAnalyzer.Analyze(audioPath);
+            if (beats.Count == 0)
+                continue;
 
             for (int difficulty = 0; difficulty < 3; difficulty++)
             {
@@ -42,11 +47,8 @@ internal static class ChartGenerator
                 if (File.Exists(chartFile))
                     continue;
 
-                var beats = WavAnalyzer.Analyze(audioPath);
-                if (beats.Count == 0)
-                    continue;
-
-                string bmsContent = GenerateBms(songName, beats, difficulty);
+                float adaptiveScale = GetAdaptiveDifficultyScale(audioPath, difficulty);
+                string bmsContent = GenerateBms(songName, beats, difficulty, adaptiveScale);
                 File.WriteAllText(chartFile, bmsContent);
             }
         }
@@ -60,6 +62,58 @@ internal static class ChartGenerator
         string prefix = difficultyIndex switch { 0 => "easy", 1 => "normal", _ => "hard" };
         string safeName = NormalizeSongFileName(songName);
         return $"{prefix}_{safeName}.bms";
+    }
+
+    public static string GetUserChartPath(string songName, int difficultyIndex)
+    {
+        string chartDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RhythmGame",
+            "Charts");
+
+        return Path.Combine(chartDir, GetChartFileName(songName, difficultyIndex));
+    }
+
+    public static string EnsureUserEditableChart(string songName, int difficultyIndex)
+    {
+        string userChartPath = GetUserChartPath(songName, difficultyIndex);
+        Directory.CreateDirectory(Path.GetDirectoryName(userChartPath)!);
+
+        if (File.Exists(userChartPath))
+            return userChartPath;
+
+        string generatedPath = Path.Combine(AppContext.BaseDirectory, ChartFolderName, GetChartFileName(songName, difficultyIndex));
+        string defaultPath = Path.Combine(AppContext.BaseDirectory, ChartFolderName, "default.bms");
+        string? sourcePath = File.Exists(generatedPath) ? generatedPath : File.Exists(defaultPath) ? defaultPath : null;
+
+        if (sourcePath is not null)
+            File.Copy(sourcePath, userChartPath, overwrite: false);
+        else
+            File.WriteAllText(userChartPath, BuildBmsString(songName, 120f, [], [new TempoSegment(0f, 120f)]));
+
+        return userChartPath;
+    }
+
+    private static float GetAdaptiveDifficultyScale(string audioPath, int difficultyIndex)
+    {
+        string songId = AudioFileCatalog.GetSongId(audioPath);
+        SongScoreRecord? score = new SongDataStore().TryGetScore(songId);
+        if (score is null || score.PlayCount < 2)
+            return 1f;
+
+        float accuracy = score.BestAccuracy;
+        if (accuracy < 60f)
+            return 0.72f;
+        if (accuracy < 75f)
+            return 0.84f;
+        if (accuracy < 88f)
+            return 0.93f;
+        if (accuracy >= 96f && difficultyIndex < 2)
+            return 1.08f;
+        if (accuracy >= 98f && difficultyIndex == 2)
+            return 1.05f;
+
+        return 1f;
     }
 
     /// <summary>
@@ -78,10 +132,10 @@ internal static class ChartGenerator
     /// <summary>
     /// 곡 길이와 난이도를 바탕으로 목표 노트 수를 계산한다.
     /// </summary>
-    private static int GetTargetNoteCount(int difficulty, float songDuration)
+    private static int GetTargetNoteCount(int difficulty, float songDuration, float adaptiveScale)
     {
         float nps = GetNotesPerSecond(difficulty);
-        return Math.Max(10, (int)MathF.Round(nps * songDuration));
+        return Math.Max(10, (int)MathF.Round(nps * songDuration * adaptiveScale));
     }
 
     /// <summary>
@@ -97,18 +151,19 @@ internal static class ChartGenerator
         };
     }
 
-    private static string GenerateBms(string songName, List<WavAnalyzer.BeatInfo> beats, int difficulty)
+    private static string GenerateBms(string songName, List<WavAnalyzer.BeatInfo> beats, int difficulty, float adaptiveScale)
     {
         int subdivision = GetSubdivision(difficulty);
 
         // BPM 추정
-        float estimatedBpm = EstimateBpm(beats);
+        List<TempoSegment> tempoMap = DetectTempoMap(beats);
+        float estimatedBpm = tempoMap.Count > 0 ? tempoMap[0].Bpm : EstimateBpm(beats);
         float secondsPerMeasure = 240f / estimatedBpm;
 
         // 곡 길이 추정 (마지막 비트 기준)
         float songDuration = beats.Count > 0 ? beats[^1].Time + 2f : 60f;
         int totalMeasures = Math.Max(4, (int)MathF.Ceiling(songDuration / secondsPerMeasure));
-        int targetNotes = GetTargetNoteCount(difficulty, songDuration);
+        int targetNotes = GetTargetNoteCount(difficulty, songDuration, adaptiveScale);
 
         // 1단계: 박자 그리드에 맞는 모든 가능한 위치 생성
         var gridPositions = new List<(int measure, float offset, float time, float energy)>();
@@ -138,7 +193,7 @@ internal static class ChartGenerator
         }
 
         if (gridPositions.Count == 0)
-            return BuildBmsString(songName, estimatedBpm, []);
+            return BuildBmsString(songName, estimatedBpm, [], tempoMap);
 
         // 2단계: 위치 선택 (에너지 우선 + 균등 분배)
         var rng = new Random(HashCode.Combine(songName.GetHashCode(), difficulty));
@@ -147,7 +202,7 @@ internal static class ChartGenerator
         // 3단계: 패턴 기반 레인 배정 (동시 노트 없이, 리듬게임 패턴 기술 활용)
         var notes = AssignLanesWithPatterns(selectedPositions, difficulty, estimatedBpm, secondsPerMeasure, rng);
 
-        return BuildBmsString(songName, estimatedBpm, notes);
+        return BuildBmsString(songName, estimatedBpm, notes, tempoMap);
     }
 
     // ── 패턴 종류 ─────────────────────────────────────────────────────────────
@@ -503,6 +558,42 @@ internal static class ChartGenerator
         return selectedPositions.OrderBy(p => p.time).ToList();
     }
 
+    private static List<TempoSegment> DetectTempoMap(List<WavAnalyzer.BeatInfo> beats)
+    {
+        float baseBpm = EstimateBpm(beats);
+        var segments = new List<TempoSegment> { new(0f, baseBpm) };
+
+        if (beats.Count < 12)
+            return segments;
+
+        const int window = 8;
+        float previousBpm = baseBpm;
+
+        for (int i = window; i < beats.Count - window; i += window)
+        {
+            var intervals = new List<float>(window);
+            for (int j = i - window + 1; j <= i; j++)
+            {
+                float gap = beats[j].Time - beats[j - 1].Time;
+                if (gap > 0.15f && gap < 1.5f)
+                    intervals.Add(gap);
+            }
+
+            if (intervals.Count < 4)
+                continue;
+
+            intervals.Sort();
+            float localBpm = NormalizeBpm(60f / intervals[intervals.Count / 2]);
+            if (MathF.Abs(localBpm - previousBpm) < 7f)
+                continue;
+
+            segments.Add(new TempoSegment(beats[i].Time, localBpm));
+            previousBpm = localBpm;
+        }
+
+        return segments;
+    }
+
     private static float EstimateBpm(List<WavAnalyzer.BeatInfo> beats)
     {
         if (beats.Count < 2)
@@ -532,12 +623,30 @@ internal static class ChartGenerator
         return MathF.Round(bpm);
     }
 
-    private static string BuildBmsString(string songName, float bpm, List<(int measure, int lane, float offset)> notes)
+    private static float NormalizeBpm(float bpm)
+    {
+        while (bpm < 80f) bpm *= 2f;
+        while (bpm > 200f) bpm /= 2f;
+        return MathF.Round(bpm);
+    }
+
+    private static string BuildBmsString(string songName, float bpm, List<(int measure, int lane, float offset)> notes, List<TempoSegment>? tempoMap = null)
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"#TITLE {songName}");
         sb.AppendLine("#ARTIST AutoGenerated");
         sb.AppendLine($"#BPM {bpm:F0}");
+
+        var tempoSegments = (tempoMap is { Count: > 0 } ? tempoMap : [new TempoSegment(0f, bpm)])
+            .GroupBy(t => MathF.Round(t.Time, 3))
+            .Select(g => g.First())
+            .OrderBy(t => t.Time)
+            .ToList();
+
+        for (int i = 1; i < tempoSegments.Count && i <= 255; i++)
+            sb.AppendLine($"#BPM{i:X2} {tempoSegments[i].Bpm:F0}");
+
+        AppendTempoChangeEvents(sb, bpm, tempoSegments);
 
         // 마디별, 레인별 그룹화
         var grouped = notes
@@ -576,6 +685,49 @@ internal static class ChartGenerator
         }
 
         return sb.ToString();
+    }
+
+    private static void AppendTempoChangeEvents(System.Text.StringBuilder sb, float baseBpm, List<TempoSegment> tempoSegments)
+    {
+        if (tempoSegments.Count <= 1)
+            return;
+
+        float secondsPerMeasure = 240f / baseBpm;
+        var byMeasure = new Dictionary<int, List<(float offset, string token)>>();
+
+        for (int i = 1; i < tempoSegments.Count && i <= 255; i++)
+        {
+            float position = tempoSegments[i].Time / secondsPerMeasure;
+            int measure = Math.Max(0, (int)MathF.Floor(position));
+            float offset = Math.Clamp(position - measure, 0f, 0.999f);
+            string token = i.ToString("X2");
+
+            if (!byMeasure.TryGetValue(measure, out List<(float offset, string token)>? events))
+            {
+                events = [];
+                byMeasure[measure] = events;
+            }
+
+            events.Add((offset, token));
+        }
+
+        foreach (var measureEvents in byMeasure.OrderBy(kvp => kvp.Key))
+        {
+            var offsets = measureEvents.Value.Select(e => e.offset).Distinct().OrderBy(o => o).ToList();
+            int resolution = DetermineResolution(offsets);
+            char[] cells = new char[resolution * 2];
+            Array.Fill(cells, '0');
+
+            foreach (var tempoEvent in measureEvents.Value)
+            {
+                int cellIndex = (int)MathF.Round(tempoEvent.offset * resolution);
+                cellIndex = Math.Clamp(cellIndex, 0, resolution - 1);
+                cells[cellIndex * 2] = tempoEvent.token[0];
+                cells[cellIndex * 2 + 1] = tempoEvent.token[1];
+            }
+
+            sb.AppendLine($"#{measureEvents.Key:D3}08:{new string(cells)}");
+        }
     }
 
     private static int DetermineResolution(List<float> offsets)

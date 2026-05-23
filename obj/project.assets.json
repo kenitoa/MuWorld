@@ -8,7 +8,7 @@
     "net9.0-windows7.0": []
   },
   "packageFolders": {
-    "C:\\Users\\abc20\\.nuget\\packages\\": {}
+    "C:\\Users\\CodexSandboxOffline\\.nuget\\packages\\": {}
   },
   "project": {
     "version": "1.0.0",
@@ -16,7 +16,7 @@
       "projectUniqueName": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\RhythmGame.csproj",
       "projectName": "game start",
       "projectPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\RhythmGame.csproj",
-      "packagesPath": "C:\\Users\\abc20\\.nuget\\packages\\",
+      "packagesPath": "C:\\Users\\CodexSandboxOffline\\.nuget\\packages\\",
       "outputPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [

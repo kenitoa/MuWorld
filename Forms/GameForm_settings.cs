@@ -35,7 +35,7 @@ public sealed partial class GameForm
         DrawCard(g, visualPanel);
 
         DrawPanelSeparators(g, soundPanel, 3);
-        DrawPanelSeparators(g, visualPanel, 6);
+        DrawPanelSeparators(g, visualPanel, 11);
 
         using var subBrush = new SolidBrush(LabelColor);
 
@@ -51,29 +51,49 @@ public sealed partial class GameForm
         DrawSoundIcon(g, GetRowIconBounds(soundPanel, 2, 3), IconColor);
         DrawSlider(g, SettingsSlider.AudioOffset, GetSliderTrackBounds(SettingsSlider.AudioOffset), _audioOffsetMs, $"{_audioOffsetMs:+0;-0;0} ms");
 
-        DrawLeftCentered(g, "DISPLAY MODE", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 0, 6));
-        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 0, 6), IconColor);
+        DrawLeftCentered(g, "DISPLAY MODE", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 0, 11));
+        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 0, 11), IconColor);
         DrawSegmentedControl(g, GetSettingsSegmentBounds("display"), ["WINDOW", "FULL"], _displayMode == DisplayMode.Windowed ? 0 : 1);
 
-        DrawLeftCentered(g, "THEME COLOR", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 1, 6));
-        DrawPaletteIcon(g, GetRowIconBounds(visualPanel, 1, 6), IconColor);
+        DrawLeftCentered(g, "THEME COLOR", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 1, 11));
+        DrawPaletteIcon(g, GetRowIconBounds(visualPanel, 1, 11), IconColor);
         DrawThemeOptions(g);
 
-        DrawLeftCentered(g, "LANE BRIGHTNESS", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 2, 6));
-        DrawLaneBrightnessIcon(g, GetRowIconBounds(visualPanel, 2, 6), IconColor);
+        DrawLeftCentered(g, "LANE BRIGHTNESS", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 2, 11));
+        DrawLaneBrightnessIcon(g, GetRowIconBounds(visualPanel, 2, 11), IconColor);
         DrawSlider(g, SettingsSlider.LaneBrightness, GetSliderTrackBounds(SettingsSlider.LaneBrightness), _laneBrightness, $"{_laneBrightness}%");
 
-        DrawLeftCentered(g, "FRAME RATE", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 3, 6));
-        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 3, 6), IconColor);
+        DrawLeftCentered(g, "FRAME RATE", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 3, 11));
+        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 3, 11), IconColor);
         DrawSegmentedControl(g, GetSettingsSegmentBounds("framerate"), FrameRateLabels, _frameRateMode);
 
-        DrawLeftCentered(g, "V-SYNC", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 4, 6));
-        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 4, 6), IconColor);
+        DrawLeftCentered(g, "RENDER QUALITY", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 4, 11));
+        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 4, 11), IconColor);
+        DrawSegmentedControl(g, GetSettingsSegmentBounds("render"), RenderQualityLabels, _renderQualityMode);
+
+        DrawLeftCentered(g, "V-SYNC", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 5, 11));
+        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 5, 11), IconColor);
         DrawToggle(g, GetSettingsToggleBounds("vsync"), _vsyncEnabled);
 
-        DrawLeftCentered(g, "DARK MODE", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 5, 6));
-        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 5, 6), IconColor);
+        DrawLeftCentered(g, "DARK MODE", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 6, 11));
+        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 6, 11), IconColor);
         DrawToggle(g, GetSettingsToggleBounds("darkmode"), _darkModeEnabled);
+
+        DrawLeftCentered(g, "HIGH CONTRAST", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 7, 11));
+        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 7, 11), IconColor);
+        DrawToggle(g, GetSettingsToggleBounds("highcontrast"), _highContrastEnabled);
+
+        DrawLeftCentered(g, "COLOR VISION", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 8, 11));
+        DrawPaletteIcon(g, GetRowIconBounds(visualPanel, 8, 11), IconColor);
+        DrawSegmentedControl(g, GetSettingsSegmentBounds("colorvision"), ColorVisionLabels, _colorVisionMode);
+
+        DrawLeftCentered(g, "REDUCED MOTION", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 9, 11));
+        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 9, 11), IconColor);
+        DrawToggle(g, GetSettingsToggleBounds("reducedmotion"), _reducedMotionEnabled);
+
+        DrawLeftCentered(g, "SPLASH TIME", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 10, 11));
+        DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 10, 11), IconColor);
+        DrawSlider(g, SettingsSlider.SplashDuration, GetSliderTrackBounds(SettingsSlider.SplashDuration), _splashDurationMs, $"{_splashDurationMs / 1000f:F1}s");
 
         DrawResetButton(g, GetResetButtonBounds(), optionFont);
     }
@@ -90,12 +110,12 @@ public sealed partial class GameForm
 
     private Rectangle GetVisualPanelBounds()
     {
-        return GetCenteredDesignRect(846f, 282f, 318f);
+        return GetCenteredDesignRect(846f, 420f, 292f);
     }
 
     private Rectangle GetResetButtonBounds()
     {
-        return GetCenteredDesignRect(278f, 42f, 710f);
+        return GetCenteredDesignRect(278f, 42f, 724f);
     }
 
     private Rectangle GetCenteredDesignRect(float designWidth, float designHeight, float designY)
@@ -127,13 +147,13 @@ public sealed partial class GameForm
         Rectangle valueBounds = GetSliderValueBounds(slider);
         float x = panelBounds.Left + ScaleX(290f);
         float width = Math.Max(ScaleX(180f), valueBounds.Left - x - ScaleX(34f));
-        int rowCount = slider == SettingsSlider.LaneBrightness ? 5 : 2;
         float y = slider switch
         {
             SettingsSlider.Bgm => GetRowCenterY(panelBounds, 0, 3) - ScaleY(4f),
             SettingsSlider.Sfx => GetRowCenterY(panelBounds, 1, 3) - ScaleY(4f),
             SettingsSlider.AudioOffset => GetRowCenterY(panelBounds, 2, 3) - ScaleY(4f),
-            SettingsSlider.LaneBrightness => GetRowCenterY(panelBounds, 2, 6) - ScaleY(4f),
+            SettingsSlider.LaneBrightness => GetRowCenterY(panelBounds, 2, 11) - ScaleY(4f),
+            SettingsSlider.SplashDuration => GetRowCenterY(panelBounds, 10, 11) - ScaleY(4f),
             _ => 0f,
         };
 
@@ -149,6 +169,7 @@ public sealed partial class GameForm
             SettingsSlider.Sfx => _sfxVolume,
             SettingsSlider.AudioOffset => _audioOffsetMs,
             SettingsSlider.LaneBrightness => _laneBrightness,
+            SettingsSlider.SplashDuration => _splashDurationMs,
             _ => 0,
         };
 
@@ -162,7 +183,7 @@ public sealed partial class GameForm
     private Rectangle GetSliderValueBounds(SettingsSlider slider)
     {
         Rectangle panelBounds = GetPanelBoundsForSlider(slider);
-        float width = slider == SettingsSlider.AudioOffset ? ScaleX(94f) : ScaleX(78f);
+        float width = slider == SettingsSlider.AudioOffset || slider == SettingsSlider.SplashDuration ? ScaleX(94f) : ScaleX(78f);
         float x = panelBounds.Right - ScaleX(44f) - width;
         float height = ScaleY(30f);
         float y = slider switch
@@ -170,7 +191,8 @@ public sealed partial class GameForm
             SettingsSlider.Bgm => GetRowCenterY(panelBounds, 0, 3) - height / 2f,
             SettingsSlider.Sfx => GetRowCenterY(panelBounds, 1, 3) - height / 2f,
             SettingsSlider.AudioOffset => GetRowCenterY(panelBounds, 2, 3) - height / 2f,
-            SettingsSlider.LaneBrightness => GetRowCenterY(panelBounds, 2, 6) - height / 2f,
+            SettingsSlider.LaneBrightness => GetRowCenterY(panelBounds, 2, 11) - height / 2f,
+            SettingsSlider.SplashDuration => GetRowCenterY(panelBounds, 10, 11) - height / 2f,
             _ => 0f,
         };
 
@@ -181,24 +203,18 @@ public sealed partial class GameForm
     {
         Rectangle visualPanel = GetVisualPanelBounds();
 
-        if (toggleKey == "vsync")
+        int rowIndex = toggleKey switch
         {
-            float centerY = GetRowCenterY(visualPanel, 4, 6);
-            float width = ScaleX(62f);
-            return Rectangle.Round(new RectangleF(visualPanel.Right - ScaleX(44f) - width, centerY - ScaleY(16f), width, ScaleY(32f)));
-        }
-        else if (toggleKey == "darkmode")
-        {
-            float centerY = GetRowCenterY(visualPanel, 5, 6);
-            float width = ScaleX(62f);
-            return Rectangle.Round(new RectangleF(visualPanel.Right - ScaleX(44f) - width, centerY - ScaleY(16f), width, ScaleY(32f)));
-        }
-        else
-        {
-            float centerY = GetRowCenterY(visualPanel, 5, 6);
-            float width = ScaleX(62f);
-            return Rectangle.Round(new RectangleF(visualPanel.Right - ScaleX(44f) - width, centerY - ScaleY(16f), width, ScaleY(32f)));
-        }
+            "vsync" => 5,
+            "darkmode" => 6,
+            "highcontrast" => 7,
+            "reducedmotion" => 9,
+            _ => 5,
+        };
+
+        float centerY = GetRowCenterY(visualPanel, rowIndex, 11);
+        float width = ScaleX(62f);
+        return Rectangle.Round(new RectangleF(visualPanel.Right - ScaleX(44f) - width, centerY - ScaleY(16f), width, ScaleY(32f)));
     }
 
     private Rectangle GetSettingsSegmentBounds(string key)
@@ -207,8 +223,10 @@ public sealed partial class GameForm
         float rightMargin = ScaleX(44f);
         return key switch
         {
-            "display" => Rectangle.Round(new RectangleF(visualPanel.Right - rightMargin - ScaleX(182f), GetRowCenterY(visualPanel, 0, 6) - ScaleY(16f), ScaleX(182f), ScaleY(32f))),
-            "framerate" => Rectangle.Round(new RectangleF(visualPanel.Right - rightMargin - ScaleX(350f), GetRowCenterY(visualPanel, 3, 6) - ScaleY(16f), ScaleX(350f), ScaleY(32f))),
+            "display" => Rectangle.Round(new RectangleF(visualPanel.Right - rightMargin - ScaleX(182f), GetRowCenterY(visualPanel, 0, 11) - ScaleY(16f), ScaleX(182f), ScaleY(32f))),
+            "framerate" => Rectangle.Round(new RectangleF(visualPanel.Right - rightMargin - ScaleX(350f), GetRowCenterY(visualPanel, 3, 11) - ScaleY(16f), ScaleX(350f), ScaleY(32f))),
+            "render" => Rectangle.Round(new RectangleF(visualPanel.Right - rightMargin - ScaleX(230f), GetRowCenterY(visualPanel, 4, 11) - ScaleY(16f), ScaleX(230f), ScaleY(32f))),
+            "colorvision" => Rectangle.Round(new RectangleF(visualPanel.Right - rightMargin - ScaleX(350f), GetRowCenterY(visualPanel, 8, 11) - ScaleY(16f), ScaleX(350f), ScaleY(32f))),
             _ => Rectangle.Empty,
         };
     }
@@ -220,7 +238,7 @@ public sealed partial class GameForm
         float spacing = ScaleX(19f);
         float totalWidth = dotSize * 4f + spacing * 3f;
         float startX = visualPanel.Right - ScaleX(56f) - totalWidth;
-        float y = GetRowCenterY(visualPanel, 1, 6) - ScaleY(16f);
+        float y = GetRowCenterY(visualPanel, 1, 11) - ScaleY(16f);
         return Rectangle.Round(new RectangleF(startX + index * (dotSize + spacing), y, dotSize, ScaleY(32f)));
     }
 
@@ -232,6 +250,7 @@ public sealed partial class GameForm
             SettingsSlider.Sfx => GetSoundPanelBounds(),
             SettingsSlider.AudioOffset => GetSoundPanelBounds(),
             SettingsSlider.LaneBrightness => GetVisualPanelBounds(),
+            SettingsSlider.SplashDuration => GetVisualPanelBounds(),
             _ => Rectangle.Empty,
         };
     }
@@ -453,7 +472,8 @@ public sealed partial class GameForm
         if (TryBeginSliderDrag(location, SettingsSlider.Bgm) ||
             TryBeginSliderDrag(location, SettingsSlider.Sfx) ||
             TryBeginSliderDrag(location, SettingsSlider.AudioOffset) ||
-            TryBeginSliderDrag(location, SettingsSlider.LaneBrightness))
+            TryBeginSliderDrag(location, SettingsSlider.LaneBrightness) ||
+            TryBeginSliderDrag(location, SettingsSlider.SplashDuration))
         {
             Invalidate();
             return;
@@ -479,6 +499,24 @@ public sealed partial class GameForm
             return;
         }
 
+        int renderHit = GetSegmentHitIndex(GetSettingsSegmentBounds("render"), RenderQualityLabels.Length, location);
+        if (renderHit >= 0)
+        {
+            _renderQualityMode = renderHit;
+            SaveUserSettings();
+            Invalidate();
+            return;
+        }
+
+        int colorVisionHit = GetSegmentHitIndex(GetSettingsSegmentBounds("colorvision"), ColorVisionLabels.Length, location);
+        if (colorVisionHit >= 0)
+        {
+            _colorVisionMode = colorVisionHit;
+            SaveUserSettings();
+            Invalidate();
+            return;
+        }
+
         if (GetSettingsToggleBounds("vsync").Contains(location))
         {
             _vsyncEnabled = !_vsyncEnabled;
@@ -490,6 +528,22 @@ public sealed partial class GameForm
         if (GetSettingsToggleBounds("darkmode").Contains(location))
         {
             _darkModeEnabled = !_darkModeEnabled;
+            SaveUserSettings();
+            Invalidate();
+            return;
+        }
+
+        if (GetSettingsToggleBounds("highcontrast").Contains(location))
+        {
+            _highContrastEnabled = !_highContrastEnabled;
+            SaveUserSettings();
+            Invalidate();
+            return;
+        }
+
+        if (GetSettingsToggleBounds("reducedmotion").Contains(location))
+        {
+            _reducedMotionEnabled = !_reducedMotionEnabled;
             SaveUserSettings();
             Invalidate();
             return;
@@ -550,6 +604,9 @@ public sealed partial class GameForm
             case SettingsSlider.LaneBrightness:
                 _laneBrightness = value;
                 break;
+            case SettingsSlider.SplashDuration:
+                _splashDurationMs = (int)Math.Round(600 + ratio * 4400);
+                break;
         }
 
         SaveUserSettings();
@@ -577,6 +634,14 @@ public sealed partial class GameForm
             return true;
         if (GetSettingsToggleBounds("darkmode").Contains(location))
             return true;
+        if (GetSettingsToggleBounds("highcontrast").Contains(location))
+            return true;
+        if (GetSettingsToggleBounds("reducedmotion").Contains(location))
+            return true;
+        if (GetSettingsSegmentBounds("render").Contains(location))
+            return true;
+        if (GetSettingsSegmentBounds("colorvision").Contains(location))
+            return true;
 
         if (Rectangle.Union(GetSliderTrackBounds(SettingsSlider.Bgm), Rectangle.Inflate(GetSliderKnobBounds(SettingsSlider.Bgm), 8, 8)).Contains(location))
             return true;
@@ -585,6 +650,8 @@ public sealed partial class GameForm
         if (Rectangle.Union(GetSliderTrackBounds(SettingsSlider.AudioOffset), Rectangle.Inflate(GetSliderKnobBounds(SettingsSlider.AudioOffset), 8, 8)).Contains(location))
             return true;
         if (Rectangle.Union(GetSliderTrackBounds(SettingsSlider.LaneBrightness), Rectangle.Inflate(GetSliderKnobBounds(SettingsSlider.LaneBrightness), 8, 8)).Contains(location))
+            return true;
+        if (Rectangle.Union(GetSliderTrackBounds(SettingsSlider.SplashDuration), Rectangle.Inflate(GetSliderKnobBounds(SettingsSlider.SplashDuration), 8, 8)).Contains(location))
             return true;
 
         for (int i = 0; i < 4; i++)
@@ -605,12 +672,21 @@ public sealed partial class GameForm
         _frameRateMode = 2;
         _vsyncEnabled = false;
         _darkModeEnabled = false;
+        _laneModeIndex = 0;
+        _splashDurationMs = 1600;
+        _highContrastEnabled = false;
+        _colorVisionMode = 0;
+        _reducedMotionEnabled = false;
+        _renderQualityMode = 1;
     }
 
     private static float GetSliderRatio(SettingsSlider slider, int value)
     {
-        return slider == SettingsSlider.AudioOffset
-            ? Math.Clamp((value + 150) / 300f, 0f, 1f)
-            : Math.Clamp(value / 100f, 0f, 1f);
+        return slider switch
+        {
+            SettingsSlider.AudioOffset => Math.Clamp((value + 150) / 300f, 0f, 1f),
+            SettingsSlider.SplashDuration => Math.Clamp((value - 600) / 4400f, 0f, 1f),
+            _ => Math.Clamp(value / 100f, 0f, 1f),
+        };
     }
 }

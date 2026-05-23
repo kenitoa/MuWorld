@@ -1,28 +1,19 @@
 namespace RhythmGame;
 
-/// <summary>
-/// WAV 파일의 오디오 데이터를 분석하여 에너지 피크(비트)를 감지하는 클래스.
-/// </summary>
 internal static class WavAnalyzer
 {
-    public readonly record struct BeatInfo(float Time, float Energy);
+    public readonly record struct BeatInfo(float Time, float Energy, float Flux = 0f, float Confidence = 0f);
 
-    /// <summary>
-    /// WAV 파일을 읽어 에너지 기반 비트 위치를 반환한다.
-    /// </summary>
     public static List<BeatInfo> Analyze(string wavPath)
     {
         using var fs = new FileStream(wavPath, FileMode.Open, FileAccess.Read);
         using var reader = new BinaryReader(fs);
 
-        // RIFF 헤더 파싱
-        string riff = new(reader.ReadChars(4));
-        if (riff != "RIFF")
+        if (new string(reader.ReadChars(4)) != "RIFF")
             return [];
 
-        reader.ReadInt32(); // file size
-        string wave = new(reader.ReadChars(4));
-        if (wave != "WAVE")
+        reader.ReadInt32();
+        if (new string(reader.ReadChars(4)) != "WAVE")
             return [];
 
         int sampleRate = 0;
@@ -30,7 +21,6 @@ internal static class WavAnalyzer
         short bitsPerSample = 0;
         byte[]? audioData = null;
 
-        // 청크 탐색
         while (fs.Position < fs.Length - 8)
         {
             string chunkId = new(reader.ReadChars(4));
@@ -38,11 +28,11 @@ internal static class WavAnalyzer
 
             if (chunkId == "fmt ")
             {
-                short audioFormat = reader.ReadInt16();
+                reader.ReadInt16();
                 channels = reader.ReadInt16();
                 sampleRate = reader.ReadInt32();
-                reader.ReadInt32(); // byte rate
-                reader.ReadInt16(); // block align
+                reader.ReadInt32();
+                reader.ReadInt16();
                 bitsPerSample = reader.ReadInt16();
                 int remaining = chunkSize - 16;
                 if (remaining > 0)
@@ -52,30 +42,23 @@ internal static class WavAnalyzer
             {
                 audioData = reader.ReadBytes(chunkSize);
             }
+            else if (chunkSize > 0 && fs.Position + chunkSize <= fs.Length)
+            {
+                fs.Seek(chunkSize, SeekOrigin.Current);
+            }
             else
             {
-                // 알 수 없는 청크 스킵
-                if (chunkSize > 0 && fs.Position + chunkSize <= fs.Length)
-                    fs.Seek(chunkSize, SeekOrigin.Current);
-                else
-                    break;
+                break;
             }
         }
 
-        if (audioData == null || sampleRate == 0 || channels == 0 || bitsPerSample == 0)
+        if (audioData is null || sampleRate == 0 || channels == 0 || bitsPerSample == 0)
             return [];
 
-        // PCM 샘플을 float 배열로 변환 (모노 다운믹스)
         float[] samples = ConvertToMonoFloat(audioData, channels, bitsPerSample);
-        if (samples.Length == 0)
-            return [];
-
-        return DetectBeats(samples, sampleRate);
+        return samples.Length == 0 ? [] : DetectBeats(samples, sampleRate);
     }
 
-    /// <summary>
-    /// WAV 파일의 총 재생 시간(초)을 반환한다.
-    /// </summary>
     public static float GetDuration(string wavPath)
     {
         try
@@ -83,9 +66,9 @@ internal static class WavAnalyzer
             using var fs = new FileStream(wavPath, FileMode.Open, FileAccess.Read);
             using var reader = new BinaryReader(fs);
 
-            reader.ReadChars(4); // RIFF
+            reader.ReadChars(4);
             reader.ReadInt32();
-            reader.ReadChars(4); // WAVE
+            reader.ReadChars(4);
 
             int sampleRate = 0;
             short channels = 0;
@@ -114,12 +97,13 @@ internal static class WavAnalyzer
                     dataSize = chunkSize;
                     break;
                 }
+                else if (chunkSize > 0 && fs.Position + chunkSize <= fs.Length)
+                {
+                    fs.Seek(chunkSize, SeekOrigin.Current);
+                }
                 else
                 {
-                    if (chunkSize > 0 && fs.Position + chunkSize <= fs.Length)
-                        fs.Seek(chunkSize, SeekOrigin.Current);
-                    else
-                        break;
+                    break;
                 }
             }
 
@@ -141,7 +125,6 @@ internal static class WavAnalyzer
         int bytesPerSample = bitsPerSample / 8;
         int blockSize = bytesPerSample * channels;
         int totalFrames = data.Length / blockSize;
-
         float[] mono = new float[totalFrames];
 
         for (int i = 0; i < totalFrames; i++)
@@ -171,54 +154,70 @@ internal static class WavAnalyzer
 
     private static List<BeatInfo> DetectBeats(float[] samples, int sampleRate)
     {
-        // 윈도우 크기: ~23ms (1024 samples at 44100Hz)
-        int windowSize = sampleRate / 43;
-        int hopSize = windowSize / 2;
+        int windowSize = Math.Max(512, sampleRate / 43);
+        int hopSize = Math.Max(128, windowSize / 2);
         int totalWindows = (samples.Length - windowSize) / hopSize;
 
         if (totalWindows <= 0)
             return [];
 
-        // 각 윈도우의 RMS 에너지 계산
-        float[] energies = new float[totalWindows];
+        float[] rms = new float[totalWindows];
+        float[] highFrequencyContent = new float[totalWindows];
         for (int w = 0; w < totalWindows; w++)
         {
             int start = w * hopSize;
-            double sum = 0;
+            double energySum = 0;
+            double diffSum = 0;
+            float previous = samples[start];
+
             for (int i = 0; i < windowSize; i++)
             {
-                float s = samples[start + i];
-                sum += s * s;
+                float sample = samples[start + i];
+                energySum += sample * sample;
+                diffSum += Math.Abs(sample - previous);
+                previous = sample;
             }
-            energies[w] = (float)Math.Sqrt(sum / windowSize);
+
+            rms[w] = (float)Math.Sqrt(energySum / windowSize);
+            highFrequencyContent[w] = (float)(diffSum / windowSize);
         }
 
-        // 로컬 평균 에너지 대비 피크 감지
-        int avgWindowHalf = 22; // ~0.5초 범위
+        float[] onset = new float[totalWindows];
+        for (int w = 1; w < totalWindows; w++)
+        {
+            float energyRise = Math.Max(0f, rms[w] - rms[w - 1]);
+            float transientRise = Math.Max(0f, highFrequencyContent[w] - highFrequencyContent[w - 1]);
+            onset[w] = energyRise * 0.65f + transientRise * 1.35f + rms[w] * 0.18f;
+        }
+
+        int avgWindowHalf = Math.Max(8, (int)Math.Round(0.45f * sampleRate / hopSize));
         var beats = new List<BeatInfo>();
-        float minInterval = 0.08f; // 최소 비트 간격 (초)
+        float minInterval = 0.08f;
         float lastBeatTime = -1f;
 
         for (int w = 1; w < totalWindows - 1; w++)
         {
-            // 로컬 평균 계산
             int lo = Math.Max(0, w - avgWindowHalf);
             int hi = Math.Min(totalWindows - 1, w + avgWindowHalf);
-            float localSum = 0;
+            float localSum = 0f;
+            float localMax = 0f;
             for (int j = lo; j <= hi; j++)
-                localSum += energies[j];
+            {
+                localSum += onset[j];
+                localMax = Math.Max(localMax, onset[j]);
+            }
+
             float localAvg = localSum / (hi - lo + 1);
+            float threshold = localAvg + (localMax - localAvg) * 0.32f;
+            float strength = onset[w];
 
-            float threshold = localAvg * 1.4f;
-            float energy = energies[w];
-
-            // 피크: 현재가 양쪽 이웃보다 크고 임계값 초과
-            if (energy > threshold && energy >= energies[w - 1] && energy >= energies[w + 1])
+            if (strength > threshold && strength >= onset[w - 1] && strength >= onset[w + 1])
             {
                 float time = w * hopSize / (float)sampleRate;
                 if (time - lastBeatTime >= minInterval)
                 {
-                    beats.Add(new BeatInfo(time, energy));
+                    float confidence = localMax <= 0f ? 0f : Math.Clamp(strength / localMax, 0f, 1f);
+                    beats.Add(new BeatInfo(time, rms[w], highFrequencyContent[w], confidence));
                     lastBeatTime = time;
                 }
             }

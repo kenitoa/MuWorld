@@ -2,20 +2,20 @@ namespace RhythmGame;
 
 public class GameEngine
 {
-    // ── 판정 범위 (초 단위 — 시간 기반 판정) ──────────────────────────────────────
-    public const float HitZoneOffset = 130f;   // 화면 아래쪽에서의 거리 (렌더링용)
-    public const float PerfectWindow = 0.030f; // ±30ms
-    public const float GreatWindow   = 0.060f; // ±60ms
-    public const float BetterWindow  = 0.090f; // ±90ms
-    public const float GoodWindow    = 0.120f; // ±120ms
-    public const float BadWindow     = 0.150f; // ±150ms
-    private const float MissThreshold = 0.180f; // 이 시간을 넘기면 Miss
+    public const float HitZoneOffset = 130f;
+    public const float PerfectWindow = 0.030f;
+    public const float GreatWindow   = 0.060f;
+    public const float BetterWindow  = 0.090f;
+    public const float GoodWindow    = 0.120f;
+    public const float BadWindow     = 0.150f;
+    private const float MissThreshold = 0.180f;
 
     public List<Note>   Notes     { get; } = [];
     public ScoreManager Score     { get; } = new();
     public bool         IsRunning { get; private set; }
     public float        NoteSpeedMultiplier { get; set; } = 1f;
     public float        AudioOffsetSeconds { get; set; }
+    public int          LaneCount { get; private set; } = 4;
 
     private float         _noteSpeed     = 280f;
     private float         _spawnTimer    = 0f;
@@ -27,11 +27,13 @@ public class GameEngine
     private int _nextChartNoteIndex;
     private float _chartTime;
     private float _spawnLeadTime;
+    private readonly bool[] _laneHeld = new bool[7];
+    private readonly int[] _laneShuffle = new int[7];
 
-    // ── 시작 / 종료 ────────────────────────────────────────────────────────────
-    public void Start(int gameHeight, IReadOnlyList<LaneNote>? chartNotes = null)
+    public void Start(int gameHeight, IReadOnlyList<LaneNote>? chartNotes = null, int laneCount = 4)
     {
         _gameHeight    = gameHeight;
+        LaneCount      = Math.Clamp(laneCount, 4, 7);
         _noteSpeed     = 280f;
         _spawnInterval = 0.85f;
         _spawnTimer    = 0f;
@@ -41,11 +43,22 @@ public class GameEngine
         _chartNotes = chartNotes ?? [];
         _spawnLeadTime = CalculateSpawnLeadTime();
         IsRunning      = true;
+        Array.Clear(_laneHeld);
         Notes.Clear();
         Score.Reset();
     }
 
-    public void Stop() => IsRunning = false;
+    public void Stop()
+    {
+        IsRunning = false;
+        Array.Clear(_laneHeld);
+    }
+
+    public void SetLaneHeld(int lane, bool isHeld)
+    {
+        if (lane >= 0 && lane < _laneHeld.Length)
+            _laneHeld[lane] = isHeld;
+    }
 
     public bool IsChartComplete
     {
@@ -53,16 +66,17 @@ public class GameEngine
         {
             if (_chartNotes.Count == 0 || _nextChartNoteIndex < _chartNotes.Count)
                 return false;
+
             for (int i = 0; i < Notes.Count; i++)
             {
-                if (Notes[i].State == NoteState.Active)
+                if (Notes[i].State is NoteState.Active or NoteState.Holding)
                     return false;
             }
+
             return true;
         }
     }
 
-    // ── 매 프레임 업데이트 ─────────────────────────────────────────────────────
     public void Update(float deltaTime)
     {
         if (!IsRunning) return;
@@ -70,7 +84,6 @@ public class GameEngine
         _elapsed += deltaTime;
         _chartTime += deltaTime;
 
-        // 배속에 비례하여 노트 간격(속도) 조절
         _noteSpeed = 450f * Math.Clamp(NoteSpeedMultiplier, 0.5f, 5.0f);
         _spawnLeadTime = CalculateSpawnLeadTime();
 
@@ -80,7 +93,6 @@ public class GameEngine
         }
         else
         {
-            // 기존 랜덤 스폰 fallback
             _spawnInterval = MathF.Max(0.38f, 0.85f - _elapsed * 0.008f);
             _spawnTimer += deltaTime;
             if (_spawnTimer >= _spawnInterval)
@@ -90,56 +102,61 @@ public class GameEngine
             }
         }
 
-        // 노트 Y좌표 계산 + Miss 처리 + 오래된 노트 제거 (단일 루프)
         float hitCenterY = _gameHeight - HitZoneOffset;
+        float syncedChartTime = GetSyncedChartTime();
         for (int i = Notes.Count - 1; i >= 0; i--)
         {
-            var note = Notes[i];
-            if (note.State == NoteState.Active)
+            Note note = Notes[i];
+            if (note.State is NoteState.Active or NoteState.Holding)
             {
-                float remainingTime = note.TargetTime - GetSyncedChartTime();
-                note.Y = hitCenterY - (Note.Height / 2f) - remainingTime * _noteSpeed;
+                UpdateNotePosition(note, hitCenterY, syncedChartTime);
 
-                // 시간 기반 Miss 판정: 노트 TargetTime을 MissThreshold 이상 지나면 Miss
-                if (remainingTime < -MissThreshold)
+                if (note.State == NoteState.Holding)
                 {
-                    note.State = NoteState.Miss;
+                    if (!_laneHeld[note.Lane] && syncedChartTime < note.EndTargetTime - BadWindow)
+                    {
+                        ResolveNote(note, NoteState.Miss, syncedChartTime);
+                        Score.AddMiss();
+                    }
+                    else if (syncedChartTime >= note.EndTargetTime)
+                    {
+                        ResolveNote(note, NoteState.Hit, syncedChartTime);
+                    }
+                    continue;
+                }
+
+                if (syncedChartTime - note.TargetTime > MissThreshold)
+                {
+                    ResolveNote(note, NoteState.Miss, syncedChartTime);
                     Score.AddMiss();
                 }
             }
-            else if (note.State != NoteState.Active)
+            else if (syncedChartTime - note.ResolvedTime > 1.0f)
             {
-                // Hit/Miss 처리된 노트가 화면 밖으로 나가면 제거
-                if (note.Y > _gameHeight + 100f)
-                    Notes.RemoveAt(i);
+                Notes.RemoveAt(i);
             }
         }
     }
 
-    // ── 판정 결과 (문자열 할당 방지용 상수) ──────────────────────────────────────
     private static readonly string[] JudgmentLabels = ["PERFECT!", "GREAT!", "BETTER", "GOOD", "BAD"];
 
     public readonly record struct HitResult(Judgment Judgment, string Label);
 
-    // ── 키 입력 판정 (시간 기반) ──────────────────────────────────────────────
-    /// <returns>판정 결과, 범위 밖이면 null</returns>
     public HitResult? TryHit(int lane)
     {
         if (!IsRunning) return null;
 
         Note? best = null;
-        float bestTimeDiff = BadWindow + 0.001f; // BadWindow 이내만 탐색
+        float bestTimeDiff = BadWindow + 0.001f;
         float syncedChartTime = GetSyncedChartTime();
 
         for (int i = 0; i < Notes.Count; i++)
         {
-            var note = Notes[i];
+            Note note = Notes[i];
             if (note.State != NoteState.Active) continue;
             if (note.Lane != lane) continue;
 
             float timeDiff = MathF.Abs(syncedChartTime - note.TargetTime);
-
-            // BadWindow 밖이면 스킵
             if (timeDiff > BadWindow) continue;
 
             if (timeDiff < bestTimeDiff)
@@ -151,9 +168,6 @@ public class GameEngine
 
         if (best is null) return null;
 
-        best.State = NoteState.Hit;
-
-        // 판정 결정 — 시간 차이 기반 (좁은 범위부터)
         Judgment j;
         if      (bestTimeDiff <= PerfectWindow) j = Judgment.Perfect;
         else if (bestTimeDiff <= GreatWindow)   j = Judgment.Great;
@@ -162,10 +176,10 @@ public class GameEngine
         else                                    j = Judgment.Bad;
 
         Score.AddHit(j);
+        ResolveNote(best, best.Type == NoteType.Long ? NoteState.Holding : NoteState.Hit, syncedChartTime);
         return new HitResult(j, JudgmentLabels[(int)j]);
     }
 
-    // ── 노트 생성 ─────────────────────────────────────────────────────────────
     private float CalculateSpawnLeadTime()
     {
         float hitCenterY = _gameHeight - HitZoneOffset;
@@ -186,9 +200,16 @@ public class GameEngine
             if (chartNote.Time > GetSyncedChartTime() + _spawnLeadTime)
                 break;
 
-            if (chartNote.Lane is >= 0 and < 4)
+            if (chartNote.Lane >= 0 && chartNote.Lane < LaneCount)
             {
-                var note = new Note(chartNote.Lane) { TargetTime = chartNote.Time };
+                int endLane = chartNote.EndLane >= 0 ? chartNote.EndLane : chartNote.Lane;
+                var note = new Note(chartNote.Lane)
+                {
+                    TargetTime = chartNote.Time,
+                    Type = chartNote.Type,
+                    Duration = Math.Max(0f, chartNote.Duration),
+                    EndLane = Math.Clamp(endLane, 0, LaneCount - 1),
+                };
                 Notes.Add(note);
             }
 
@@ -196,15 +217,12 @@ public class GameEngine
         }
     }
 
-    private readonly int[] _laneShuffle = new int[4];
-
     private void SpawnNotes()
     {
         int count = _rng.Next(1, 3);
 
-        // Fisher-Yates shuffle (no LINQ allocation)
-        for (int i = 0; i < 4; i++) _laneShuffle[i] = i;
-        for (int i = 3; i > 0; i--)
+        for (int i = 0; i < LaneCount; i++) _laneShuffle[i] = i;
+        for (int i = LaneCount - 1; i > 0; i--)
         {
             int j = _rng.Next(i + 1);
             (_laneShuffle[i], _laneShuffle[j]) = (_laneShuffle[j], _laneShuffle[i]);
@@ -213,8 +231,29 @@ public class GameEngine
         float targetTime = GetSyncedChartTime() + _spawnLeadTime;
         for (int i = 0; i < count; i++)
         {
-            var note = new Note(_laneShuffle[i]) { TargetTime = targetTime };
+            NoteType type = (_elapsed > 8f && i == 0 && _rng.Next(8) == 0) ? NoteType.Long : NoteType.Tap;
+            var note = new Note(_laneShuffle[i])
+            {
+                TargetTime = targetTime,
+                Type = type,
+                Duration = type == NoteType.Long ? 0.5f : 0f,
+            };
             Notes.Add(note);
         }
+    }
+
+    private void UpdateNotePosition(Note note, float hitCenterY, float syncedChartTime)
+    {
+        float remainingTime = note.TargetTime - syncedChartTime;
+        note.Y = hitCenterY - (Note.Height / 2f) - remainingTime * _noteSpeed;
+
+        float endRemainingTime = note.EndTargetTime - syncedChartTime;
+        note.EndY = hitCenterY - (Note.Height / 2f) - endRemainingTime * _noteSpeed;
+    }
+
+    private static void ResolveNote(Note note, NoteState state, float syncedChartTime)
+    {
+        note.State = state;
+        note.ResolvedTime = syncedChartTime;
     }
 }

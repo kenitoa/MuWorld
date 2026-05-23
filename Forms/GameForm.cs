@@ -21,7 +21,8 @@ internal enum SettingsSlider
     Bgm,
     Sfx,
     AudioOffset,
-    LaneBrightness
+    LaneBrightness,
+    SplashDuration
 }
 
 internal enum DisplayMode
@@ -80,6 +81,7 @@ public sealed partial class GameForm : Form
     private bool _isApplyingDisplayMode;
     private Rectangle _windowedBounds;
     private IReadOnlyList<LaneNote> _selectedChartNotes = [];
+    private bool _isGamePaused;
 
     // Analyze screen state
     private string _analyzeSongTitle = string.Empty;
@@ -107,8 +109,15 @@ public sealed partial class GameForm : Form
     private int _frameRateMode = 2; // 0=30, 1=60, 2=120, 3=144, 4=240
     private bool _vsyncEnabled;
     private bool _darkModeEnabled;
+    private int _splashDurationMs = 1600;
+    private bool _highContrastEnabled;
+    private int _colorVisionMode;
+    private bool _reducedMotionEnabled;
+    private int _renderQualityMode = 1;
     private static readonly int[] FrameRateIntervals = [33, 16, 8, 7, 4]; // ms per frame
     private static readonly string[] FrameRateLabels = ["30", "60", "120", "144", "240"];
+    private static readonly string[] RenderQualityLabels = ["FAST", "BAL", "HIGH"];
+    private static readonly string[] ColorVisionLabels = ["OFF", "DEUT", "PROT", "TRIT"];
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmFlush();
@@ -133,7 +142,20 @@ public sealed partial class GameForm : Form
     private int _cachedComboValue;
 
     // ── 레인 설정 ─────────────────────────────────────────────────────────────
-    private const int LaneCount = 4;
+    private sealed record LaneModeConfig(int Count, Keys[] Keys, string[] Labels);
+
+    private static readonly LaneModeConfig[] LaneModes =
+    [
+        new(4, [Keys.D, Keys.F, Keys.J, Keys.K], ["D", "F", "J", "K"]),
+        new(5, [Keys.D, Keys.F, Keys.Space, Keys.J, Keys.K], ["D", "F", "Space", "J", "K"]),
+        new(7, [Keys.S, Keys.D, Keys.F, Keys.Space, Keys.J, Keys.K, Keys.L], ["S", "D", "F", "Space", "J", "K", "L"]),
+    ];
+
+    private int _laneModeIndex;
+    private LaneModeConfig ActiveLaneMode => LaneModes[_laneModeIndex];
+    private int LaneCount => ActiveLaneMode.Count;
+    private Keys[] LaneKeys => ActiveLaneMode.Keys;
+    private string[] LaneLabels => ActiveLaneMode.Labels;
     private int LaneWidth => ClientSize.Width / LaneCount;
 
     private static readonly Color[] LaneColors =
@@ -142,11 +164,12 @@ public sealed partial class GameForm : Form
         Color.FromArgb( 80, 210,  80),   // F — 초록
         Color.FromArgb( 80, 120, 255),   // J — 파랑
         Color.FromArgb(255, 210,  50),   // K — 노랑
+        Color.FromArgb(255, 120, 210),   // 5K center / 7K accent
+        Color.FromArgb( 80, 220, 230),   // 7K cyan
+        Color.FromArgb(210, 140, 255),   // 7K violet
     ];
 
-    private static readonly Keys[]   LaneKeys   = [Keys.D, Keys.F, Keys.J, Keys.K];
-    private static readonly string[] LaneLabels = ["D", "F", "J", "K"];
-    private readonly bool[] _lanePressed = new bool[LaneCount];
+    private readonly bool[] _lanePressed = new bool[7];
 
     // ── 캐시된 GDI+ 객체 (게임 렌더링 성능 최적화) ──────────────────────────────
     private static readonly SolidBrush[] _noteGlowBrushes = LaneColors
@@ -237,6 +260,8 @@ public sealed partial class GameForm : Form
     public GameForm()
     {
         Text            = "Rhythm Game";
+        AccessibleName = "Rhythm Game";
+        AccessibleRole = AccessibleRole.Application;
         BackColor       = Color.White;
         DoubleBuffered  = true;
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -270,8 +295,19 @@ public sealed partial class GameForm : Form
 
         _audio.PlayMainScreenBgm();
 
-        _splashTimer.Tick += (_, _) => Invalidate();
+        _splashTimer.Tick += OnSplashTick;
         _splashTimer.Start();
+    }
+
+    private void OnSplashTick(object? sender, EventArgs e)
+    {
+        if (_splashDurationMs > 0 && (DateTime.Now - _splashStartTime).TotalMilliseconds >= _splashDurationMs)
+        {
+            TransitionFromSplash();
+            return;
+        }
+
+        Invalidate();
     }
 
     private void PlaySelectedSongBgm(SongEntry? song)
@@ -298,11 +334,17 @@ public sealed partial class GameForm : Form
             if ((now - _countdownStartTime).TotalSeconds >= _countdownSeconds)
             {
                 _isCountdownActive = false;
-                _engine.Start(ClientSize.Height, _selectedChartNotes);
+                _engine.Start(ClientSize.Height, _selectedChartNotes, LaneCount);
                 SongEntry? selectedSong = _screen == UiScreen.SongSelect ? GetSelectedSong() : null;
                 PlaySelectedSongBgm(selectedSong);
             }
 
+            Invalidate();
+            return;
+        }
+
+        if (_isGamePaused)
+        {
             Invalidate();
             return;
         }
@@ -414,14 +456,60 @@ public sealed partial class GameForm : Form
                     return;
                 }
 
+                if (e.KeyCode == Keys.D5 || e.KeyCode == Keys.NumPad5)
+                {
+                    e.SuppressKeyPress = true;
+                    CycleLaneModeForward();
+                    Invalidate();
+                    return;
+                }
+
+                if (e.KeyCode == Keys.D6 || e.KeyCode == Keys.NumPad6)
+                {
+                    e.SuppressKeyPress = true;
+                    CycleLaneModeBackward();
+                    Invalidate();
+                    return;
+                }
+
+                if (e.KeyCode == Keys.E && !_isSongSearchFocused)
+                {
+                    e.SuppressKeyPress = true;
+                    OpenSelectedChartForEditing();
+                    return;
+                }
+
                 return;
             }
+
+            if (e.KeyCode == Keys.D5 || e.KeyCode == Keys.NumPad5) { e.SuppressKeyPress = true; CycleLaneModeForward(); Invalidate(); return; }
+            if (e.KeyCode == Keys.D6 || e.KeyCode == Keys.NumPad6) { e.SuppressKeyPress = true; CycleLaneModeBackward(); Invalidate(); return; }
 
             if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; BeginGame(); }
             return;
         }
 
-        if (e.KeyCode == Keys.Escape) { e.SuppressKeyPress = true; _chartCompleteWaiting = false; EndGame(); return; }
+        if (_isGamePaused)
+        {
+            if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.P)
+            {
+                e.SuppressKeyPress = true;
+                ResumeGame();
+                return;
+            }
+
+            if (e.KeyCode == Keys.Back)
+            {
+                e.SuppressKeyPress = true;
+                _chartCompleteWaiting = false;
+                EndGame();
+                return;
+            }
+
+            return;
+        }
+
+        if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.P) { e.SuppressKeyPress = true; PauseGame(); return; }
 
         // 배속 조절: 1키 증가, 2키 감소
         if (e.KeyCode == Keys.D1) { e.SuppressKeyPress = true; IncreaseSpeed(); Invalidate(); return; }
@@ -437,6 +525,7 @@ public sealed partial class GameForm : Form
             e.SuppressKeyPress = true;
             if (_lanePressed[i]) break;   // 키 반복 방지
             _lanePressed[i] = true;
+            _engine.SetLaneHeld(i, true);
             GameEngine.HitResult? hit = _engine.TryHit(i);
             if (hit is not null)
             {
@@ -458,6 +547,7 @@ public sealed partial class GameForm : Form
             if (e.KeyCode == LaneKeys[i])
             {
                 _lanePressed[i] = false;
+                _engine.SetLaneHeld(i, false);
                 // 게임 중에는 타이머가 Invalidate()를 호출하므로 메뉴에서만 호출
                 if (!_engine.IsRunning) Invalidate();
                 break;
@@ -483,15 +573,17 @@ public sealed partial class GameForm : Form
     private void BeginGame()
     {
         _feedback = null;
+        _isGamePaused = false;
+        Array.Clear(_lanePressed);
         ApplySettingsToRuntime();
         _audio.StopAllSounds();
         SongEntry? selectedSong = _screen == UiScreen.SongSelect ? GetSelectedSong() : null;
-        _selectedChartNotes = NoteLane.LoadNotes(selectedSong?.Title, selectedSong?.Artist, _songSelectDifficultyIndex);
+        _selectedChartNotes = NoteLane.LoadNotes(selectedSong?.Title, selectedSong?.Artist, _songSelectDifficultyIndex, LaneCount);
 
         // 시작 후 3초간 노트 없이 준비 시간 확보
         const float startDelay = 3f;
         _selectedChartNotes = _selectedChartNotes
-            .Select(n => new LaneNote(n.Time + startDelay, n.Lane))
+            .Select(n => new LaneNote(n.Time + startDelay, n.Lane, n.Type, n.Duration, n.EndLane))
             .ToList();
 
         _countdownSeconds = 3;
@@ -513,23 +605,27 @@ public sealed partial class GameForm : Form
         _analyzeGoodCount = _engine.Score.GoodCount;
         _analyzeBadCount = _engine.Score.BadCount;
         _analyzeMissCount = _engine.Score.MissCount;
-        // Compute miss streak approximation
-        int totalHits = _engine.Score.PerfectCount + _engine.Score.GreatCount + _engine.Score.BetterCount + _engine.Score.GoodCount + _engine.Score.BadCount;
-        _analyzeMissStreak = _engine.Score.MissCount > 0 ? Math.Max(1, _engine.Score.MissCount / Math.Max(1, totalHits) + 1) : 0;
+        _analyzeMissStreak = _engine.Score.MaxMissStreak;
 
         // Store song info
         SongEntry? song = GetSelectedSong();
         _analyzeSongTitle = song?.Title ?? "Unknown";
-        _analyzeSongArtist = song?.Artist ?? "Unknown";
+        _analyzeSongArtist = song is null ? "Unknown" : BuildSongPreviewMetadata(song);
         _analyzeSongArtworkStyle = song?.ArtworkStyle ?? 0;
-        _analyzeHighestScore = _playerProgress.HighestScore;
+        int previousSongHighScore = song is null
+            ? _playerProgress.HighestScore
+            : SongData.TryGetScore(song.SongId)?.HighestScore ?? 0;
+        _analyzeHighestScore = previousSongHighScore;
 
+        SongScoreRecord? songScore = RecordSongScore(song);
         RecordAchievementProgress();
         _engine.Stop();
         _isCountdownActive = false;
+        _isGamePaused = false;
+        Array.Clear(_lanePressed);
 
         // Update highest score after recording
-        _analyzeHighestScore = Math.Max(_analyzeHighestScore, _analyzeScore);
+        _analyzeHighestScore = songScore?.HighestScore ?? Math.Max(_analyzeHighestScore, _analyzeScore);
 
         _isAnalyzeOkHovered = false;
         _screen = UiScreen.Analyze;
@@ -539,6 +635,20 @@ public sealed partial class GameForm : Form
         else if (!HasPendingAchievementToast())
             _timer.Stop();
         Invalidate();
+    }
+
+    private SongScoreRecord? RecordSongScore(SongEntry? song)
+    {
+        if (song is null)
+            return null;
+
+        int judged = _analyzePerfectCount + _analyzeGreatCount + _analyzeBetterCount + _analyzeGoodCount + _analyzeBadCount + _analyzeMissCount;
+        int hits = _analyzePerfectCount + _analyzeGreatCount + _analyzeBetterCount + _analyzeGoodCount + _analyzeBadCount;
+        float accuracy = judged > 0 ? hits * 100f / judged : 0f;
+
+        SongScoreRecord record = SongData.RecordScore(song.ToMetadata(), _songSelectDifficultyIndex, _analyzeScore, _analyzeMaxCombo, accuracy);
+        InvalidateSongCache();
+        return record;
     }
 
     private void RecordAchievementProgress()
@@ -564,10 +674,54 @@ public sealed partial class GameForm : Form
     private void CancelCountdown()
     {
         _isCountdownActive = false;
+        _isGamePaused = false;
+        Array.Clear(_lanePressed);
         _audio.StopAllSounds();
         _audio.PlayMainScreenBgm();
         _timer.Stop();
         _screen = UiScreen.MainMenu;
+    }
+
+    private void PauseGame()
+    {
+        if (!_engine.IsRunning || _isGamePaused)
+            return;
+
+        _isGamePaused = true;
+        Array.Clear(_lanePressed);
+        for (int i = 0; i < 7; i++)
+            _engine.SetLaneHeld(i, false);
+        _audio.PauseInGameBgm();
+        Invalidate();
+    }
+
+    private void ResumeGame()
+    {
+        if (!_engine.IsRunning || !_isGamePaused)
+            return;
+
+        _isGamePaused = false;
+        _frameStopwatch.Restart();
+        _audio.ResumeInGameBgm();
+        Invalidate();
+    }
+
+    private void CycleLaneModeForward()
+    {
+        if (_engine.IsRunning || _isCountdownActive)
+            return;
+
+        _laneModeIndex = (_laneModeIndex + 1) % LaneModes.Length;
+        SaveUserSettings();
+    }
+
+    private void CycleLaneModeBackward()
+    {
+        if (_engine.IsRunning || _isCountdownActive)
+            return;
+
+        _laneModeIndex = (_laneModeIndex - 1 + LaneModes.Length) % LaneModes.Length;
+        SaveUserSettings();
     }
 
     // ── 렌더링 ────────────────────────────────────────────────────────────────
@@ -576,18 +730,8 @@ public sealed partial class GameForm : Form
         base.OnPaint(e);
         var g = e.Graphics;
         bool inGame = _engine.IsRunning || _isCountdownActive;
-        if (inGame)
-        {
-            g.SmoothingMode = SmoothingMode.HighSpeed;
-            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Low;
-            g.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighSpeed;
-            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighSpeed;
-            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SystemDefault;
-        }
-        else
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-        }
+        UpdateAccessibleContext(inGame);
+        ApplyRenderingQuality(g, inGame);
         g.Clear(inGame ? Color.FromArgb(10, 14, 24) : ClearColor);
 
         if (_screen == UiScreen.Splash)
@@ -625,6 +769,50 @@ public sealed partial class GameForm : Form
 
         if (_activeAchievementToast is not null)
             DrawAchievementToast(g, _activeAchievementToast);
+    }
+
+    private void ApplyRenderingQuality(Graphics g, bool inGame)
+    {
+        if (_renderQualityMode == 0 || inGame)
+        {
+            g.SmoothingMode = SmoothingMode.HighSpeed;
+            g.InterpolationMode = InterpolationMode.Low;
+            g.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighSpeed;
+            g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SystemDefault;
+            return;
+        }
+
+        if (_renderQualityMode == 2)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            return;
+        }
+
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.InterpolationMode = InterpolationMode.HighQualityBilinear;
+        g.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.AssumeLinear;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SystemDefault;
+    }
+
+    private void UpdateAccessibleContext(bool inGame)
+    {
+        string screenName = inGame ? "In Game" : _screen.ToString();
+        AccessibleName = $"Rhythm Game - {screenName}";
+        AccessibleDescription = screenName switch
+        {
+            "Splash" => "Splash screen. Press any key or click to start.",
+            "Settings" => "Settings screen. Adjust sound, display, accessibility, and rendering options.",
+            "SongSelect" => "Song selection screen. Select a song and difficulty, then start the game.",
+            "Analyze" => "Results screen. Review score, combo, judgments, and miss streak.",
+            "In Game" => "Gameplay screen. Use lane keys to hit notes. Press Escape or P to pause.",
+            _ => "Main menu. Open settings, song select, or achievements.",
+        };
     }
 
     private void EnqueueAchievementToasts(IEnumerable<AchievementDefinition> unlockedAchievements)
@@ -742,10 +930,12 @@ public sealed partial class GameForm : Form
         float waveCenterY = h * 0.58f;
 
         // 여러 겹의 동적 웨이브 라인
-        DrawSplashWaves(g, w, h, waveCenterY, elapsed);
+        if (!_reducedMotionEnabled)
+            DrawSplashWaves(g, w, h, waveCenterY, elapsed);
 
         // 빛나는 파티클
-        DrawSplashParticles(g, w, h, waveCenterY, elapsed);
+        if (!_reducedMotionEnabled)
+            DrawSplashParticles(g, w, h, waveCenterY, elapsed);
 
         // "RHYTHM BEAT" 제목
         float titleFontSize = Math.Max(28f, Math.Min(w, h) * 0.062f);
@@ -762,7 +952,7 @@ public sealed partial class GameForm : Form
         g.DrawString(title2, titleFont, titleBrush, titleX - sz2.Width / 2f, titleY2);
 
         // 하단 안내 텍스트 (깜빡임)
-        float blink = (float)(Math.Sin(elapsed * 3.0) * 0.5 + 0.5);
+        float blink = _reducedMotionEnabled ? 0.8f : (float)(Math.Sin(elapsed * 3.0) * 0.5 + 0.5);
         int alpha = (int)(80 + 175 * blink);
         using var hintFont = new Font("Segoe UI", Math.Max(10f, h * 0.018f), FontStyle.Regular);
         using var hintBrush = new SolidBrush(Color.FromArgb(alpha, 100, 130, 170));
@@ -961,6 +1151,7 @@ public sealed partial class GameForm : Form
         // ── 배속/모드 인디케이터 ──
         DrawSpeedIndicator(g, playArea);
         DrawGameModeIndicator(g, playArea);
+        DrawLaneModeIndicator(g, playArea);
 
         // ── 판정 피드백 ──
         if (_feedback is not null)
@@ -986,7 +1177,24 @@ public sealed partial class GameForm : Form
             }
         }
 
+        if (_isGamePaused)
+            DrawPauseOverlay(g);
+
         g.Restore(state);
+    }
+
+    private void DrawPauseOverlay(Graphics g)
+    {
+        using var dimBrush = new SolidBrush(Color.FromArgb(170, 8, 10, 18));
+        g.FillRectangle(dimBrush, 0, 0, ClientSize.Width, ClientSize.Height);
+
+        using var titleFont = new Font("Segoe UI", Math.Max(18f, 38f * _layoutScale), FontStyle.Bold);
+        using var hintFont = new Font("Segoe UI", Math.Max(9f, 14f * _layoutScale), FontStyle.Bold);
+        using var titleBrush = new SolidBrush(Color.White);
+        using var hintBrush = new SolidBrush(Color.FromArgb(220, 210, 225, 250));
+
+        DrawCentered(g, "PAUSED", titleFont, titleBrush, ClientSize.Width / 2, ClientSize.Height / 2 - (int)(55f * _layoutScale));
+        DrawCentered(g, "ESC / P Resume    Back End", hintFont, hintBrush, ClientSize.Width / 2, ClientSize.Height / 2 + (int)(8f * _layoutScale));
     }
 
     private void DrawGameFrame(Graphics g, Rectangle playArea)
@@ -1081,17 +1289,50 @@ public sealed partial class GameForm : Form
         int ny = (int)note.Y;
         int nw = laneWidth - 12;
         int nh = (int)Note.Height;
+        int colorIndex = note.Lane % _noteGlowBrushes.Length;
+
+        if (note.Type != NoteType.Tap)
+        {
+            int endLane = Math.Clamp(note.EndLane, 0, LaneCount - 1);
+            int endX = playAreaLeft + endLane * laneWidth + 6;
+            int endY = (int)note.EndY;
+            int bodyTop = Math.Min(ny, endY) + nh / 2;
+            int bodyHeight = Math.Max(8, Math.Abs(endY - ny));
+            Rectangle bodyBounds = new(Math.Min(nx, endX), bodyTop, Math.Abs(endX - nx) + nw, bodyHeight);
+
+            using var bodyBrush = new LinearGradientBrush(
+                bodyBounds,
+                Color.FromArgb(90, _noteTopColors[colorIndex]),
+                Color.FromArgb(35, _noteBotColors[colorIndex]),
+                LinearGradientMode.Vertical);
+
+            if (note.Type == NoteType.Slide && endLane != note.Lane)
+            {
+                using var bodyPen = new Pen(bodyBrush, Math.Max(8f, laneWidth * 0.18f))
+                {
+                    StartCap = LineCap.Round,
+                    EndCap = LineCap.Round,
+                };
+                g.DrawLine(bodyPen, nx + nw / 2, ny + nh / 2, endX + nw / 2, endY + nh / 2);
+            }
+            else
+            {
+                Rectangle bodyRect = new(nx + nw / 3, bodyTop, Math.Max(8, nw / 3), bodyHeight);
+                using var bodyPath = CreateRoundedRect(bodyRect, 6f);
+                g.FillPath(bodyBrush, bodyPath);
+            }
+        }
 
         // 노트 글로우 (뒤쪽) — 캐시된 브러시 사용
         Rectangle glowRect = new(nx - 3, ny - 2, nw + 6, nh + 4);
-        g.FillRectangle(_noteGlowBrushes[note.Lane], glowRect);
+        g.FillRectangle(_noteGlowBrushes[colorIndex], glowRect);
 
         // 노트 본체 (둥근 바)
         Rectangle noteRect = new(nx, ny, nw, nh);
         using var notePath = CreateRoundedRect(noteRect, 5f);
 
         // 그라데이션 — 캐시된 색상 사용
-        using var noteBrush = new LinearGradientBrush(noteRect, _noteTopColors[note.Lane], _noteBotColors[note.Lane], LinearGradientMode.Vertical);
+        using var noteBrush = new LinearGradientBrush(noteRect, _noteTopColors[colorIndex], _noteBotColors[colorIndex], LinearGradientMode.Vertical);
         g.FillPath(noteBrush, notePath);
 
         // 노트 하이라이트 (상단 밝은 줄) — 캐시된 브러시
@@ -1099,6 +1340,14 @@ public sealed partial class GameForm : Form
         g.FillRectangle(_noteHighlightBrush, highlightRect);
 
         // 노트 테두리 — 캐시된 펜
+        if (_colorVisionMode > 0 || UseHighContrast)
+        {
+            using var labelFont = new Font("Segoe UI", Math.Max(7f, laneWidth * 0.08f), FontStyle.Bold);
+            using var labelBrush = new SolidBrush(UseHighContrast ? Color.Black : Color.White);
+            string noteLabel = LaneLabels[Math.Min(note.Lane, LaneLabels.Length - 1)];
+            DrawCentered(g, noteLabel, labelFont, labelBrush, nx + nw / 2, ny + Math.Max(1, nh / 8));
+        }
+
         g.DrawPath(_noteBorderPen, notePath);
     }
 
@@ -1615,8 +1864,8 @@ public sealed partial class GameForm : Form
         float sx = ClientSize.Width / DesignWidth;
         float sy = ClientSize.Height / DesignHeight;
         _layoutScale = Math.Max(0.35f, Math.Min(sx, sy));
-        _layoutOffsetX = (ClientSize.Width - DesignWidth * _layoutScale) / 2f;
-        _layoutOffsetY = (ClientSize.Height - DesignHeight * _layoutScale) / 2f;
+        _layoutOffsetX = Math.Max(0f, (ClientSize.Width - DesignWidth * _layoutScale) / 2f);
+        _layoutOffsetY = Math.Max(0f, (ClientSize.Height - DesignHeight * _layoutScale) / 2f);
     }
 
     private void ApplySettingsToRuntime()
@@ -1640,6 +1889,12 @@ public sealed partial class GameForm : Form
         _vsyncEnabled = settings.VSyncEnabled;
         _darkModeEnabled = settings.DarkModeEnabled;
         _audioOffsetMs = Math.Clamp(settings.AudioOffsetMs, -150, 150);
+        _laneModeIndex = Math.Clamp(settings.LaneModeIndex, 0, LaneModes.Length - 1);
+        _splashDurationMs = Math.Clamp(settings.SplashDurationMs, 600, 5000);
+        _highContrastEnabled = settings.HighContrastEnabled;
+        _colorVisionMode = Math.Clamp(settings.ColorVisionMode, 0, ColorVisionLabels.Length - 1);
+        _reducedMotionEnabled = settings.ReducedMotionEnabled;
+        _renderQualityMode = Math.Clamp(settings.RenderQualityMode, 0, RenderQualityLabels.Length - 1);
     }
 
     private void SaveUserSettings()
@@ -1654,6 +1909,12 @@ public sealed partial class GameForm : Form
             VSyncEnabled = _vsyncEnabled,
             DarkModeEnabled = _darkModeEnabled,
             AudioOffsetMs = _audioOffsetMs,
+            LaneModeIndex = _laneModeIndex,
+            SplashDurationMs = _splashDurationMs,
+            HighContrastEnabled = _highContrastEnabled,
+            ColorVisionMode = _colorVisionMode,
+            ReducedMotionEnabled = _reducedMotionEnabled,
+            RenderQualityMode = _renderQualityMode,
         });
     }
 
@@ -1727,30 +1988,47 @@ public sealed partial class GameForm : Form
 
     private Color GetAccentColor()
     {
+        if (UseHighContrast)
+            return Color.FromArgb(255, 230, 0);
+
         int index = Math.Clamp(_themeColorIndex, 0, ThemeColors.Length - 1);
+        if (_colorVisionMode > 0)
+        {
+            Color[] accessibleThemeColors =
+            [
+                Color.FromArgb(0, 114, 178),
+                Color.FromArgb(213, 94, 0),
+                Color.FromArgb(0, 158, 115),
+                Color.FromArgb(204, 121, 167),
+            ];
+            return accessibleThemeColors[index];
+        }
+
         return ThemeColors[index];
     }
 
+    private bool UseHighContrast => _highContrastEnabled || SystemInformation.HighContrast;
+
     // ── Dark Mode 색상 헬퍼 ──────────────────────────────────────────────────
-    private Color BgColor1 => _darkModeEnabled ? Color.FromArgb(24, 26, 33) : Color.FromArgb(250, 250, 252);
-    private Color BgColor2 => _darkModeEnabled ? Color.FromArgb(18, 20, 26) : Color.FromArgb(243, 244, 247);
-    private Color CardFill => _darkModeEnabled ? Color.FromArgb(36, 39, 48) : Color.FromArgb(252, 252, 253);
-    private Color CardBorder => _darkModeEnabled ? Color.FromArgb(58, 62, 72) : Color.FromArgb(221, 223, 228);
+    private Color BgColor1 => UseHighContrast ? Color.Black : (_darkModeEnabled ? Color.FromArgb(24, 26, 33) : Color.FromArgb(250, 250, 252));
+    private Color BgColor2 => UseHighContrast ? Color.Black : (_darkModeEnabled ? Color.FromArgb(18, 20, 26) : Color.FromArgb(243, 244, 247));
+    private Color CardFill => UseHighContrast ? Color.Black : (_darkModeEnabled ? Color.FromArgb(36, 39, 48) : Color.FromArgb(252, 252, 253));
+    private Color CardBorder => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(58, 62, 72) : Color.FromArgb(221, 223, 228));
     private Color CardShadow => _darkModeEnabled ? Color.FromArgb(30, 0, 0, 0) : Color.FromArgb(15, 86, 95, 112);
-    private Color SeparatorColor => _darkModeEnabled ? Color.FromArgb(52, 56, 65) : Color.FromArgb(228, 230, 234);
-    private Color LabelColor => _darkModeEnabled ? Color.FromArgb(180, 185, 195) : Color.FromArgb(104, 109, 118);
-    private Color SubTextColor => _darkModeEnabled ? Color.FromArgb(140, 148, 165) : Color.FromArgb(125, 142, 175);
-    private Color PrimaryTextColor => _darkModeEnabled ? Color.FromArgb(220, 225, 235) : Color.FromArgb(43, 84, 158);
-    private Color SecondaryTextColor => _darkModeEnabled ? Color.FromArgb(160, 170, 185) : Color.FromArgb(108, 125, 156);
-    private Color SliderTrackColor => _darkModeEnabled ? Color.FromArgb(55, 60, 72) : Color.FromArgb(230, 232, 236);
+    private Color SeparatorColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(52, 56, 65) : Color.FromArgb(228, 230, 234));
+    private Color LabelColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(180, 185, 195) : Color.FromArgb(104, 109, 118));
+    private Color SubTextColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(140, 148, 165) : Color.FromArgb(125, 142, 175));
+    private Color PrimaryTextColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(220, 225, 235) : Color.FromArgb(43, 84, 158));
+    private Color SecondaryTextColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(160, 170, 185) : Color.FromArgb(108, 125, 156));
+    private Color SliderTrackColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(55, 60, 72) : Color.FromArgb(230, 232, 236));
     private Color ToggleOffColor => _darkModeEnabled ? Color.FromArgb(65, 70, 82) : Color.FromArgb(217, 220, 225);
-    private Color SegmentBg => _darkModeEnabled ? Color.FromArgb(32, 36, 45) : Color.FromArgb(251, 251, 252);
-    private Color SegmentBorder => _darkModeEnabled ? Color.FromArgb(55, 60, 72) : Color.FromArgb(212, 215, 220);
-    private Color SegmentText => _darkModeEnabled ? Color.FromArgb(155, 162, 178) : Color.FromArgb(109, 113, 120);
-    private Color SegmentDivider => _darkModeEnabled ? Color.FromArgb(50, 55, 66) : Color.FromArgb(226, 228, 232);
-    private Color ValuePillBg => _darkModeEnabled ? Color.FromArgb(40, 44, 54) : Color.FromArgb(250, 250, 251);
-    private Color ValuePillBorder => _darkModeEnabled ? Color.FromArgb(60, 65, 78) : Color.FromArgb(213, 216, 221);
-    private Color ValuePillText => _darkModeEnabled ? Color.FromArgb(175, 182, 195) : Color.FromArgb(100, 104, 111);
+    private Color SegmentBg => UseHighContrast ? Color.Black : (_darkModeEnabled ? Color.FromArgb(32, 36, 45) : Color.FromArgb(251, 251, 252));
+    private Color SegmentBorder => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(55, 60, 72) : Color.FromArgb(212, 215, 220));
+    private Color SegmentText => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(155, 162, 178) : Color.FromArgb(109, 113, 120));
+    private Color SegmentDivider => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(50, 55, 66) : Color.FromArgb(226, 228, 232));
+    private Color ValuePillBg => UseHighContrast ? Color.Black : (_darkModeEnabled ? Color.FromArgb(40, 44, 54) : Color.FromArgb(250, 250, 251));
+    private Color ValuePillBorder => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(60, 65, 78) : Color.FromArgb(213, 216, 221));
+    private Color ValuePillText => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(175, 182, 195) : Color.FromArgb(100, 104, 111));
     private Color SliderKnobShadow => _darkModeEnabled ? Color.FromArgb(40, 0, 0, 0) : Color.FromArgb(24, 70, 96, 146);
     private Color BackBtnFill => _darkModeEnabled ? Color.FromArgb(40, 44, 54) : Color.FromArgb(250, 250, 251);
     private Color BackBtnBorder => _darkModeEnabled ? Color.FromArgb(60, 65, 78) : Color.FromArgb(204, 206, 212);

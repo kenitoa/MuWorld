@@ -16,7 +16,18 @@ public sealed partial class GameForm
         string Format,
         float DurationSeconds,
         float Bpm,
-        int HighestScore)
+        float PreviewStart,
+        float PreviewEnd,
+        string Genre,
+        string Source,
+        string BgaPath,
+        string CoverPath,
+        int HighestScore,
+        string BestGrade,
+        string BestClearType,
+        bool IsFavorite,
+        int PlayCount,
+        string LastPlayedUtc)
     {
         public SongMetadata ToMetadata() => new()
         {
@@ -26,6 +37,12 @@ public sealed partial class GameForm
             Format = Format,
             DurationSeconds = DurationSeconds,
             Bpm = Bpm,
+            PreviewStart = PreviewStart,
+            PreviewEnd = PreviewEnd,
+            Genre = Genre,
+            Source = Source,
+            BgaPath = BgaPath,
+            CoverPath = CoverPath,
         };
     }
 
@@ -46,12 +63,18 @@ public sealed partial class GameForm
 
         string[] audioFiles = AudioFileCatalog.DiscoverSongFiles(bgmDir);
 
+        var metadataItems = new SongMetadata[audioFiles.Length];
+        for (int i = 0; i < audioFiles.Length; i++)
+            metadataItems[i] = AudioFileCatalog.ReadSongMetadata(audioFiles[i]);
+
+        SongData.UpsertMetadataBatch(metadataItems);
+
         var songs = new SongEntry[audioFiles.Length];
         for (int i = 0; i < audioFiles.Length; i++)
         {
-            SongMetadata metadata = AudioFileCatalog.ReadSongMetadata(audioFiles[i]);
-            SongData.UpsertMetadata(metadata);
-            int highestScore = SongData.TryGetScore(metadata.SongId)?.HighestScore ?? 0;
+            SongMetadata metadata = metadataItems[i];
+            SongScoreRecord? record = SongData.TryGetScore(metadata.SongId) ?? SongData.TryGetScore(AudioFileCatalog.GetLegacySongId(audioFiles[i]));
+            int highestScore = record?.HighestScore ?? 0;
             string name = metadata.Title;
             string artist = $"InGameBGM · {AudioFileCatalog.GetFormatLabel(audioFiles[i])}";
             artist = metadata.Artist;
@@ -64,7 +87,18 @@ public sealed partial class GameForm
                 metadata.Format,
                 metadata.DurationSeconds,
                 metadata.Bpm,
-                highestScore);
+                metadata.PreviewStart,
+                metadata.PreviewEnd,
+                metadata.Genre,
+                metadata.Source,
+                metadata.BgaPath,
+                metadata.CoverPath,
+                highestScore,
+                record?.BestGrade ?? string.Empty,
+                record?.BestClearType ?? string.Empty,
+                record?.IsFavorite ?? false,
+                record?.PlayCount ?? 0,
+                record?.LastPlayedUtc ?? string.Empty);
         }
 
         _cachedSongList = songs;
@@ -74,18 +108,21 @@ public sealed partial class GameForm
     /// <summary>곡 목록 캐시를 무효화한다 (새 WAV 추가 시).</summary>
     private static void InvalidateSongCache() => _cachedSongList = null;
 
-    private static string BuildSongListMetadata(SongEntry song)
+    private static string BuildSongMetadata(SongEntry song, bool includeBest = false)
     {
         string duration = FormatSongDuration(song.DurationSeconds);
         string bpm = song.Bpm > 0f ? $"BPM {song.Bpm:F0}" : "BPM --";
-        return $"{song.Artist} | {song.Format} | {duration} | {bpm}";
-    }
+        string genre = string.IsNullOrWhiteSpace(song.Genre) ? string.Empty : $" | {song.Genre}";
+        string favorite = song.IsFavorite ? " | FAV" : string.Empty;
+        string text = $"{song.Artist} | {song.Format} | {duration} | {bpm}{genre}{favorite}";
+        if (!AudioAnalysisPipeline.CanAnalyze(song.FilePath))
+            text += " | analysis needs ffmpeg";
+        if (!includeBest)
+            return text;
 
-    private static string BuildSongPreviewMetadata(SongEntry song)
-    {
-        string duration = FormatSongDuration(song.DurationSeconds);
-        string bpm = song.Bpm > 0f ? $"BPM {song.Bpm:F0}" : "BPM --";
-        return $"{song.Artist} | {song.Format} | {duration} | {bpm} | Best {song.HighestScore:N0}";
+        string grade = string.IsNullOrWhiteSpace(song.BestGrade) ? "--" : song.BestGrade;
+        string clear = string.IsNullOrWhiteSpace(song.BestClearType) ? "No Clear" : song.BestClearType;
+        return $"{text} | Best {song.HighestScore:N0} | {grade} | {clear}";
     }
 
     private static string FormatSongDuration(float seconds)
@@ -98,8 +135,6 @@ public sealed partial class GameForm
     }
 
     // 모든 난이도에서 동일한 곡 목록을 사용 (채보만 다름)
-    private static readonly SongEntry[][] SongPools = [[], [], []];
-
     private void DrawSongSelect(Graphics g)
     {
         DrawSongSelectBackground(g);
@@ -108,15 +143,15 @@ public sealed partial class GameForm
         Rectangle panel = GetSongSelectPanelBounds();
         DrawSongSelectPanel(g, panel);
 
-        using var titleFont = new Font("Segoe UI", Math.Max(12f, ScaleY(31f)), FontStyle.Bold);
+        using var titleFont = new Font("Segoe UI", Math.Max(12f, ScaleTextY(31f)), FontStyle.Bold);
         using var titleBrush = new SolidBrush(GetAccentColor());
-        using var rowTitleFont = new Font("Segoe UI", Math.Max(9.5f, ScaleY(17f)), FontStyle.Bold);
-        using var artistFont = new Font("Segoe UI", Math.Max(8.5f, ScaleY(12.5f)), FontStyle.Regular);
+        using var rowTitleFont = new Font("Segoe UI", Math.Max(9.5f, ScaleTextY(17f)), FontStyle.Bold);
+        using var artistFont = new Font("Segoe UI", Math.Max(8.5f, ScaleTextY(12.5f)), FontStyle.Regular);
         using var dimBrush = new SolidBrush(SubTextColor);
         using var rowTitleBrush = new SolidBrush(PrimaryTextColor);
         using var artistBrush = new SolidBrush(SecondaryTextColor);
         using var sepPen = new Pen(SeparatorColor, Math.Max(1f, ScaleY(1.1f)));
-        using var playFont = new Font("Segoe UI", Math.Max(10f, ScaleY(20f)), FontStyle.Bold);
+        using var playFont = new Font("Segoe UI", Math.Max(10f, ScaleTextY(20f)), FontStyle.Bold);
 
         string title = "SONG SELECT";
         SizeF titleSize = g.MeasureString(title, titleFont);
@@ -130,6 +165,7 @@ public sealed partial class GameForm
 
         Rectangle searchBounds = GetSongSearchBounds(panel);
         DrawSongSearchBox(g, searchBounds, dimBrush);
+        DrawSongLibraryControls(g, panel, artistFont, rowTitleBrush, artistBrush);
 
         Rectangle tabBounds = GetSongDifficultyBounds(panel);
         DrawSongDifficultyTabs(g, tabBounds);
@@ -142,17 +178,20 @@ public sealed partial class GameForm
 
         Rectangle rightPreviewBounds = GetSongPreviewArtworkBounds(panel);
         SongEntry? selectedSong = GetSelectedSong();
-        DrawSongArtwork(g, rightPreviewBounds, selectedSong?.ArtworkStyle ?? 0);
+        EnsureSongPreview(selectedSong);
+        DrawSongArtwork(g, rightPreviewBounds, selectedSong);
 
         Rectangle rightInfoTop = GetSongPreviewTopTextBounds(panel);
         g.DrawString(selectedSong?.Title ?? "No Result", rowTitleFont, rowTitleBrush, rightInfoTop.Left, rightInfoTop.Top);
-        g.DrawString(selectedSong is null ? "Try another keyword" : BuildSongPreviewMetadata(selectedSong), artistFont, artistBrush, rightInfoTop.Left, rightInfoTop.Top + ScaleY(43f));
+        g.DrawString(selectedSong is null ? "Try another keyword" : BuildSongMetadata(selectedSong, includeBest: true), artistFont, artistBrush, rightInfoTop.Left, rightInfoTop.Top + ScaleY(43f));
 
         Rectangle bottomInfo = GetSongPreviewBottomTextBounds(panel);
         g.DrawString(selectedSong?.Title ?? "No Result", rowTitleFont, rowTitleBrush, bottomInfo.Left, bottomInfo.Top);
-        g.DrawString(selectedSong is null ? "Try another keyword" : BuildSongPreviewMetadata(selectedSong), artistFont, artistBrush, bottomInfo.Left, bottomInfo.Top + ScaleY(42f));
+        g.DrawString(selectedSong is null ? "Try another keyword" : BuildSongMetadata(selectedSong, includeBest: true), artistFont, artistBrush, bottomInfo.Left, bottomInfo.Top + ScaleY(42f));
+        DrawSongChartPreview(g, GetSongChartPreviewBounds(panel), selectedSong, artistFont);
 
         DrawSongPlayButton(g, GetSongPlayButtonBounds(panel), _hoverSongPlayIndex == 1, playFont);
+        DrawSongSelectHints(g, panel, artistFont);
     }
 
     private void DrawSongSelectBackground(Graphics g)
@@ -205,7 +244,7 @@ public sealed partial class GameForm
         g.DrawEllipse(iconPen, iconX, iconY, ScaleX(19f), ScaleY(19f));
         g.DrawLine(iconPen, iconX + ScaleX(14f), iconY + ScaleY(14f), iconX + ScaleX(24f), iconY + ScaleY(24f));
 
-        using var font = new Font("Segoe UI", Math.Max(9f, ScaleY(13f)), FontStyle.Regular);
+        using var font = new Font("Segoe UI", Math.Max(9f, ScaleTextY(13f)), FontStyle.Regular);
         if (string.IsNullOrWhiteSpace(_songSearchQuery))
         {
             g.DrawString("Songlist name...", font, textBrush, bounds.Left + ScaleX(70f), bounds.Top + ScaleY(11f));
@@ -226,6 +265,55 @@ public sealed partial class GameForm
     private Rectangle GetSongDifficultyBounds(Rectangle panel)
     {
         return Rectangle.Round(new RectangleF(panel.Left + ScaleX(448f), panel.Top + ScaleY(31f), ScaleX(541f), ScaleY(44f)));
+    }
+
+    private Rectangle GetSongSortButtonBounds(Rectangle panel)
+    {
+        return Rectangle.Round(new RectangleF(panel.Left + ScaleX(448f), panel.Top + ScaleY(83f), ScaleX(142f), ScaleY(30f)));
+    }
+
+    private Rectangle GetSongFavoriteFilterBounds(Rectangle panel)
+    {
+        return Rectangle.Round(new RectangleF(panel.Left + ScaleX(602f), panel.Top + ScaleY(83f), ScaleX(104f), ScaleY(30f)));
+    }
+
+    private Rectangle GetSongRescanButtonBounds(Rectangle panel)
+    {
+        return Rectangle.Round(new RectangleF(panel.Left + ScaleX(718f), panel.Top + ScaleY(83f), ScaleX(104f), ScaleY(30f)));
+    }
+
+    private Rectangle GetSongDetailButtonBounds(Rectangle panel)
+    {
+        return Rectangle.Round(new RectangleF(panel.Left + ScaleX(834f), panel.Top + ScaleY(83f), ScaleX(128f), ScaleY(30f)));
+    }
+
+    private void DrawSongLibraryControls(Graphics g, Rectangle panel, Font font, Brush titleBrush, Brush dimBrush)
+    {
+        DrawSongControlButton(g, GetSongSortButtonBounds(panel), $"SORT {SongSortLabels[_songSortModeIndex]}", font, titleBrush, _hoverSongPlayIndex == 40);
+        DrawSongControlButton(g, GetSongFavoriteFilterBounds(panel), _songFavoritesOnly ? "FAV ON" : "FAV ALL", font, dimBrush, _hoverSongPlayIndex == 41);
+        DrawSongControlButton(g, GetSongRescanButtonBounds(panel), "RESCAN", font, dimBrush, _hoverSongPlayIndex == 42);
+        DrawSongControlButton(g, GetSongDetailButtonBounds(panel), "DETAIL", font, dimBrush, _hoverSongPlayIndex == 43);
+    }
+
+    private void DrawSongControlButton(Graphics g, Rectangle bounds, string text, Font font, Brush textBrush, bool hovered)
+    {
+        using var path = CreateRoundedRect(bounds, ScaleY(8f));
+        using var fill = new SolidBrush(hovered ? Color.FromArgb(64, 42, 58, 88) : Color.FromArgb(42, 26, 38, 60));
+        using var border = new Pen(Color.FromArgb(88, 100, 132, 190), Math.Max(1f, ScaleY(1f)));
+        g.FillPath(fill, path);
+        g.DrawPath(border, path);
+        DrawCentered(g, text, font, textBrush, bounds.Left + bounds.Width / 2, bounds.Top + (int)ScaleY(6f));
+    }
+
+    private void DrawSongSelectHints(Graphics g, Rectangle panel, Font font)
+    {
+        Rectangle bounds = Rectangle.Round(new RectangleF(
+            panel.Left + ScaleX(448f),
+            panel.Bottom - ScaleY(34f),
+            ScaleX(540f),
+            ScaleY(22f)));
+        using var brush = new SolidBrush(Color.FromArgb(160, 172, 190, 220));
+        DrawCentered(g, "Enter Play   L Replay   D Detail   E Chart   F Favorite   R Rescan   5/6 Lane   Esc Back", font, brush, bounds.Left + bounds.Width / 2, bounds.Top + (int)ScaleY(3f));
     }
 
     private void DrawSongDifficultyTabs(Graphics g, Rectangle bounds)
@@ -255,7 +343,7 @@ public sealed partial class GameForm
                 g.DrawPath(sh, sp);
             }
 
-            using var tabFont = new Font("Segoe UI", Math.Max(9f, ScaleY(17f)), FontStyle.Bold);
+            using var tabFont = new Font("Segoe UI", Math.Max(9f, ScaleTextY(17f)), FontStyle.Bold);
             using var tb = new SolidBrush(selected ? Color.White : hovered ? Color.FromArgb(83, 108, 150) : TabText);
             DrawCentered(g, labels[i], tabFont, tb, tab.Left + tab.Width / 2, tab.Top + (int)ScaleY(9f));
         }
@@ -312,7 +400,7 @@ public sealed partial class GameForm
 
             DrawSmallSongNote(g, iconCircle, selected ? Color.FromArgb(144, 118, 205) : Color.FromArgb(152, 143, 202));
             g.DrawString(song.Title, titleFont, titleBrush, rowBounds.Left + ScaleX(85f), rowBounds.Top + ScaleY(15f));
-            g.DrawString(BuildSongListMetadata(song), artistFont, artistBrush, rowBounds.Left + ScaleX(85f), rowBounds.Top + ScaleY(47f));
+            g.DrawString(BuildSongMetadata(song), artistFont, artistBrush, rowBounds.Left + ScaleX(85f), rowBounds.Top + ScaleY(47f));
 
             Rectangle chevron = Rectangle.Round(new RectangleF(rowBounds.Right - ScaleX(34f), rowBounds.Top + ScaleY(26f), ScaleX(12f), ScaleY(20f)));
             using var cp = new Pen(hovered || selected ? Color.FromArgb(127, 155, 208) : Color.FromArgb(176, 187, 207), Math.Max(2f, ScaleY(2.8f))) { StartCap = LineCap.Round, EndCap = LineCap.Round };
@@ -452,6 +540,11 @@ public sealed partial class GameForm
         return Rectangle.Round(new RectangleF(panel.Left + ScaleX(786f), panel.Top + ScaleY(455f), ScaleX(202f), ScaleY(62f)));
     }
 
+    private Rectangle GetSongChartPreviewBounds(Rectangle panel)
+    {
+        return Rectangle.Round(new RectangleF(panel.Left + ScaleX(730f), panel.Top + ScaleY(258f), ScaleX(235f), ScaleY(128f)));
+    }
+
     private Rectangle GetSongSelectCloseButtonBounds()
     {
         return Rectangle.Round(new RectangleF(ScaleX(1056f), ScaleY(34f), ScaleX(52f), ScaleY(52f)));
@@ -490,6 +583,10 @@ public sealed partial class GameForm
 
         if (GetSongPrevButtonBounds(panel).Contains(location)) return 20;
         if (GetSongNextButtonBounds(panel).Contains(location)) return 21;
+        if (GetSongSortButtonBounds(panel).Contains(location)) return 40;
+        if (GetSongFavoriteFilterBounds(panel).Contains(location)) return 41;
+        if (GetSongRescanButtonBounds(panel).Contains(location)) return 42;
+        if (GetSongDetailButtonBounds(panel).Contains(location)) return 43;
 
         Rectangle dots = GetSongDotsBounds(panel);
         int pageCount = GetSongPageCount();
@@ -521,6 +618,8 @@ public sealed partial class GameForm
         {
             _hoverSongPlayIndex = -1;
             _screen = UiScreen.MainMenu;
+            _audio.StopSongPreview();
+            _audio.PlayMainScreenBgm();
             Invalidate();
             return;
         }
@@ -538,6 +637,7 @@ public sealed partial class GameForm
             _songSelectDifficultyIndex = code - 10;
             _songSelectPageIndex = 0;
             _songSelectSelectedIndex = 0;
+            _previewSongKey = string.Empty;
             Invalidate();
             return;
         }
@@ -558,6 +658,38 @@ public sealed partial class GameForm
             return;
         }
 
+        if (code == 40)
+        {
+            _songSortModeIndex = (_songSortModeIndex + 1) % SongSortLabels.Length;
+            _songSelectPageIndex = 0;
+            _songSelectSelectedIndex = 0;
+            _previewSongKey = string.Empty;
+            Invalidate();
+            return;
+        }
+
+        if (code == 41)
+        {
+            _songFavoritesOnly = !_songFavoritesOnly;
+            _songSelectPageIndex = 0;
+            _songSelectSelectedIndex = 0;
+            _previewSongKey = string.Empty;
+            Invalidate();
+            return;
+        }
+
+        if (code == 42)
+        {
+            RescanSongs();
+            return;
+        }
+
+        if (code == 43)
+        {
+            OpenSelectedSongDetail();
+            return;
+        }
+
         if (code is >= 30 and < 30 + 12)
         {
             _songSelectPageIndex = code - 30;
@@ -573,6 +705,7 @@ public sealed partial class GameForm
             if (GetSongByIndex(absoluteIndex) is not null)
             {
                 _songSelectSelectedIndex = absoluteIndex;
+                _previewSongKey = string.Empty;
                 Invalidate();
             }
         }
@@ -597,10 +730,41 @@ public sealed partial class GameForm
     {
         SongEntry[] songs = GetCurrentSongs();
         string query = _songSearchQuery.Trim();
-        if (string.IsNullOrEmpty(query))
-            return songs;
+        IEnumerable<SongEntry> filtered = songs;
 
-        return songs.Where(song => IsSongMatch(song, query)).ToArray();
+        if (_songFavoritesOnly)
+            filtered = filtered.Where(song => song.IsFavorite);
+
+        if (!string.IsNullOrEmpty(query))
+            filtered = filtered.Where(song => IsSongMatch(song, query));
+
+        return ApplySongSort(filtered).ToArray();
+    }
+
+    private IEnumerable<SongEntry> ApplySongSort(IEnumerable<SongEntry> songs)
+    {
+        return _songSortModeIndex switch
+        {
+            1 => songs.OrderBy(s => s.Artist, StringComparer.OrdinalIgnoreCase).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase),
+            2 => songs.OrderBy(s => s.Bpm <= 0f).ThenBy(s => s.Bpm).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase),
+            3 => songs.OrderBy(s => s.DurationSeconds <= 0f).ThenBy(s => s.DurationSeconds).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase),
+            4 => songs.OrderByDescending(s => s.HighestScore).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase),
+            5 => songs.OrderByDescending(s => ParseSortableUtc(s.LastPlayedUtc)).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase),
+            6 => songs.OrderByDescending(GetSongLevelForSort).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase),
+            7 => songs.OrderByDescending(s => s.IsFavorite).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase),
+            _ => songs.OrderBy(s => s.Title, StringComparer.OrdinalIgnoreCase),
+        };
+    }
+
+    private int GetSongLevelForSort(SongEntry song)
+    {
+        ChartValidationResult result = NoteLane.LoadValidatedChart(song.Title, song.Artist, _songSelectDifficultyIndex, LaneCount);
+        return result.Difficulty.Level;
+    }
+
+    private static long ParseSortableUtc(string value)
+    {
+        return DateTime.TryParse(value, out DateTime parsed) ? parsed.ToUniversalTime().Ticks : 0L;
     }
 
     private static bool IsSongMatch(SongEntry song, string query)
@@ -609,10 +773,14 @@ public sealed partial class GameForm
 
         bool basicMatch = song.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                           song.Artist.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                          song.Format.Contains(query, StringComparison.OrdinalIgnoreCase);
+                          song.Format.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                          song.Genre.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                          song.Source.Contains(query, StringComparison.OrdinalIgnoreCase);
         bool normalizedMatch = qNorm.Length > 0 &&
                                (NormalizeForSearch(song.Title).Contains(qNorm) ||
-                                NormalizeForSearch(song.Artist).Contains(qNorm));
+                                NormalizeForSearch(song.Artist).Contains(qNorm) ||
+                                NormalizeForSearch(song.Genre).Contains(qNorm) ||
+                                NormalizeForSearch(song.Source).Contains(qNorm));
 
         return basicMatch || normalizedMatch;
     }
@@ -673,6 +841,41 @@ public sealed partial class GameForm
         return GetSongSelectHoverCode(location) >= 0;
     }
 
+    private void RescanSongs()
+    {
+        InvalidateSongCache();
+        _songSelectPageIndex = 0;
+        _songSelectSelectedIndex = 0;
+        _previewSongKey = string.Empty;
+        _songPreviewNotes = [];
+        _songPreviewDifficulty = null;
+        _audio.StopSongPreview();
+        _feedback = "Songs rescanned";
+        _feedbackTime = DateTime.Now;
+        Invalidate();
+    }
+
+    private void OpenSelectedSongDetail()
+    {
+        if (GetSelectedSong() is null)
+            return;
+
+        _screen = UiScreen.SongDetail;
+        _audio.StopSongPreview();
+        Invalidate();
+    }
+
+    private void ToggleSelectedSongFavorite()
+    {
+        SongEntry? song = GetSelectedSong();
+        if (song is null)
+            return;
+
+        SongData.SetFavorite(song.SongId, !song.IsFavorite);
+        InvalidateSongCache();
+        _previewSongKey = string.Empty;
+    }
+
     private void OpenSelectedChartForEditing()
     {
         SongEntry? song = GetSelectedSong();
@@ -681,14 +884,8 @@ public sealed partial class GameForm
 
         try
         {
-            string chartPath = ChartGenerator.EnsureUserEditableChart(song.Title, _songSelectDifficultyIndex);
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = chartPath,
-                UseShellExecute = true,
-            });
-
-            _feedback = "Chart editor opened";
+            OpenChartEditor(song);
+            _feedback = "Chart editor";
             _feedbackTime = DateTime.Now;
             InvalidateSongCache();
         }
@@ -699,6 +896,84 @@ public sealed partial class GameForm
         }
 
         Invalidate();
+    }
+
+    private void EnsureSongPreview(SongEntry? song)
+    {
+        if (song is null)
+        {
+            _audio.StopSongPreview();
+            _previewSongKey = string.Empty;
+            return;
+        }
+
+        string key = $"{song.SongId}:{_songSelectDifficultyIndex}:{LaneCount}";
+        if (_previewSongKey == key && (DateTime.Now - _previewStartedAt).TotalSeconds < 14.5)
+            return;
+
+        _previewSongKey = key;
+        _previewStartedAt = DateTime.Now;
+        ChartValidationResult result = NoteLane.LoadValidatedChart(song.Title, song.Artist, _songSelectDifficultyIndex, LaneCount);
+        _songPreviewNotes = result.Notes;
+        _songPreviewDifficulty = result.Difficulty;
+        _songPreviewStatus = result.Diagnostics.Count == 0
+            ? "CHART OK"
+            : $"{result.Diagnostics.Count} WARN";
+
+        float start = song.PreviewStart > 0f
+            ? song.PreviewStart
+            : song.DurationSeconds > 25f ? MathF.Min(20f, song.DurationSeconds * 0.25f) : 0f;
+        float duration = song.PreviewEnd > song.PreviewStart
+            ? Math.Clamp(song.PreviewEnd - song.PreviewStart, 3f, 30f)
+            : 15f;
+        _audio.PlaySongPreview(song.FilePath, start, duration, _previewVolume);
+    }
+
+    private void DrawSongChartPreview(Graphics g, Rectangle bounds, SongEntry? song, Font font)
+    {
+        using var path = CreateRoundedRect(bounds, ScaleY(12f));
+        using var fill = new SolidBrush(Color.FromArgb(52, 16, 24, 42));
+        using var border = new Pen(Color.FromArgb(84, 120, 155, 210), Math.Max(1f, ScaleY(1.2f)));
+        using var textBrush = new SolidBrush(Color.FromArgb(214, 226, 248));
+        g.FillPath(fill, path);
+        g.DrawPath(border, path);
+
+        if (song is null || _songPreviewDifficulty is not ChartDifficultyInfo difficulty)
+        {
+            g.DrawString("NO CHART", font, textBrush, bounds.Left + ScaleX(14f), bounds.Top + ScaleY(12f));
+            return;
+        }
+
+        string title = $"Lv.{difficulty.Level}  {_songPreviewStatus}";
+        g.DrawString(title, font, textBrush, bounds.Left + ScaleX(12f), bounds.Top + ScaleY(10f));
+
+        Rectangle graph = Rectangle.Round(new RectangleF(bounds.Left + ScaleX(12f), bounds.Top + ScaleY(42f), bounds.Width - ScaleX(24f), ScaleY(54f)));
+        using var basePen = new Pen(Color.FromArgb(52, 120, 150, 205), Math.Max(1f, ScaleY(1f)));
+        g.DrawRectangle(basePen, graph);
+
+        int buckets = 18;
+        int[] counts = new int[buckets];
+        float duration = Math.Max(1f, song.DurationSeconds);
+        foreach (LaneNote note in _songPreviewNotes)
+        {
+            int bucket = Math.Clamp((int)(note.Time / duration * buckets), 0, buckets - 1);
+            counts[bucket]++;
+        }
+
+        int max = Math.Max(1, counts.Max());
+        float barGap = ScaleX(2f);
+        float barW = (graph.Width - barGap * (buckets - 1)) / buckets;
+        using var barBrush = new SolidBrush(GetAccentColor());
+        for (int i = 0; i < buckets; i++)
+        {
+            float h = graph.Height * counts[i] / max;
+            RectangleF bar = new(graph.Left + i * (barW + barGap), graph.Bottom - h, barW, h);
+            g.FillRectangle(barBrush, bar);
+        }
+
+        using var subBrush = new SolidBrush(Color.FromArgb(170, 188, 218));
+        string sub = $"{_songPreviewNotes.Count} notes  {difficulty.NotesPerSecond:F1} n/s";
+        g.DrawString(sub, font, subBrush, bounds.Left + ScaleX(12f), bounds.Bottom - ScaleY(25f));
     }
 
     private void DrawSongPlayButton(Graphics g, Rectangle bounds, bool hovered, Font font)
@@ -731,7 +1006,7 @@ public sealed partial class GameForm
         DrawCentered(g, "PLAY ▶", font, textBrush, drawBounds.Left + drawBounds.Width / 2, drawBounds.Top + (int)ScaleY(10f));
     }
 
-    private void DrawSongArtwork(Graphics g, Rectangle bounds, int style)
+    private void DrawSongArtwork(Graphics g, Rectangle bounds, SongEntry? song)
     {
         using var path = CreateRoundedRect(bounds, ScaleY(14f));
         using var borderPen = new Pen(PanelBorder, Math.Max(1.2f, ScaleY(1.6f)));
@@ -739,7 +1014,14 @@ public sealed partial class GameForm
         GraphicsState state = g.Save();
         g.SetClip(clipPath);
 
-        switch (style)
+        if (TryDrawCoverImage(g, bounds, song?.CoverPath))
+        {
+            g.Restore(state);
+            g.DrawPath(borderPen, path);
+            return;
+        }
+
+        switch (song?.ArtworkStyle ?? 0)
         {
             case 0:
                 using (var bg = new LinearGradientBrush(bounds, Color.FromArgb(229, 205, 245), Color.FromArgb(172, 224, 248), LinearGradientMode.Vertical))
@@ -788,6 +1070,52 @@ public sealed partial class GameForm
 
         g.Restore(state);
         g.DrawPath(borderPen, path);
+    }
+
+    private void DrawSongArtwork(Graphics g, Rectangle bounds, int style)
+    {
+        DrawSongArtwork(g, bounds, new SongEntry(
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            style,
+            string.Empty,
+            string.Empty,
+            0f,
+            0f,
+            0f,
+            0f,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            0,
+            string.Empty,
+            string.Empty,
+            false,
+            0,
+            string.Empty));
+    }
+
+    private static bool TryDrawCoverImage(Graphics g, Rectangle bounds, string? coverPath)
+    {
+        if (string.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
+            return false;
+
+        try
+        {
+            using Image image = Image.FromFile(coverPath);
+            float scale = Math.Max(bounds.Width / (float)image.Width, bounds.Height / (float)image.Height);
+            float width = image.Width * scale;
+            float height = image.Height * scale;
+            RectangleF dest = new(bounds.Left + (bounds.Width - width) / 2f, bounds.Top + (bounds.Height - height) / 2f, width, height);
+            g.DrawImage(image, dest);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static void DrawSongTitleNote(Graphics g, float x, float y, Color color)

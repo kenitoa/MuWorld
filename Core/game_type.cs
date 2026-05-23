@@ -1,17 +1,19 @@
+using System.Drawing.Drawing2D;
+
 namespace RhythmGame;
 
 public enum GameMode
 {
-    Normal,   // 일반
-    Blind,    // 블라인드
-    Fog,      // 안개
+    Normal,
+    Blind,
+    Fog,
 }
 
 public sealed partial class GameForm
 {
     private GameMode _gameMode = GameMode.Normal;
 
-    private static readonly string[] GameModeLabels = ["일반", "블라인드", "안개"];
+    private static readonly string[] GameModeLabels = ["NORMAL", "BLIND", "FOG"];
 
     private void CycleGameModeForward()
     {
@@ -65,27 +67,24 @@ public sealed partial class GameForm
         switch (_gameMode)
         {
             case GameMode.Blind:
-                // 블라인드: 노트가 히트존 근처에서만 보이도록 상단을 가림
                 int blindCover = hitY - 120;
                 if (blindCover > 0)
-                {
                     g.FillRectangle(_blindBrush, playArea.Left, playArea.Top, playArea.Width, blindCover);
-                }
                 break;
 
             case GameMode.Fog:
-                // 안개: 반투명 안개 효과로 가시성 저하
                 g.FillRectangle(_fogBrush1, playArea.Left, playArea.Top, playArea.Width, playArea.Height);
 
-                // 히트존 주변만 살짝 클리어
                 int clearZone = 160;
                 Rectangle clearRect = new(playArea.Left, hitY - clearZone, playArea.Width, clearZone + 40);
-                using (var clearBrush = new System.Drawing.Drawing2D.LinearGradientBrush(
+                using (var clearBrush = new LinearGradientBrush(
                     clearRect,
                     Color.FromArgb(0, 0, 0, 0),
                     Color.FromArgb(140, 15, 18, 30),
-                    System.Drawing.Drawing2D.LinearGradientMode.Vertical))
+                    LinearGradientMode.Vertical))
+                {
                     g.FillRectangle(clearBrush, clearRect);
+                }
                 break;
         }
     }

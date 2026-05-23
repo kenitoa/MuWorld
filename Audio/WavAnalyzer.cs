@@ -2,7 +2,14 @@ namespace RhythmGame;
 
 internal static class WavAnalyzer
 {
-    public readonly record struct BeatInfo(float Time, float Energy, float Flux = 0f, float Confidence = 0f);
+    public readonly record struct BeatInfo(
+        float Time,
+        float Energy,
+        float Flux = 0f,
+        float Confidence = 0f,
+        float LowEnergy = 0f,
+        float MidEnergy = 0f,
+        float HighEnergy = 0f);
 
     public static List<BeatInfo> Analyze(string wavPath)
     {
@@ -114,8 +121,9 @@ internal static class WavAnalyzer
             int totalSamples = dataSize / (bytesPerSample * channels);
             return totalSamples / (float)sampleRate;
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Error($"Failed to read WAV duration for {Path.GetFileName(wavPath)}.", ex);
             return 0f;
         }
     }
@@ -154,7 +162,7 @@ internal static class WavAnalyzer
 
     private static List<BeatInfo> DetectBeats(float[] samples, int sampleRate)
     {
-        int windowSize = Math.Max(512, sampleRate / 43);
+        int windowSize = Math.Max(512, sampleRate / 86);
         int hopSize = Math.Max(128, windowSize / 2);
         int totalWindows = (samples.Length - windowSize) / hopSize;
 
@@ -162,37 +170,61 @@ internal static class WavAnalyzer
             return [];
 
         float[] rms = new float[totalWindows];
-        float[] highFrequencyContent = new float[totalWindows];
+        float[] lowBand = new float[totalWindows];
+        float[] midBand = new float[totalWindows];
+        float[] highBand = new float[totalWindows];
+        float[] spectralFlux = new float[totalWindows];
+        float slowLow = 0f;
+        float fastLow = 0f;
         for (int w = 0; w < totalWindows; w++)
         {
             int start = w * hopSize;
             double energySum = 0;
-            double diffSum = 0;
+            double lowSum = 0;
+            double midSum = 0;
+            double highSum = 0;
+            double fluxSum = 0;
             float previous = samples[start];
 
             for (int i = 0; i < windowSize; i++)
             {
                 float sample = samples[start + i];
+                slowLow = slowLow * 0.992f + sample * 0.008f;
+                fastLow = fastLow * 0.92f + sample * 0.08f;
+                float low = slowLow;
+                float mid = fastLow - slowLow;
+                float high = sample - fastLow;
+                float diff = Math.Abs(sample - previous);
+
                 energySum += sample * sample;
-                diffSum += Math.Abs(sample - previous);
+                lowSum += low * low;
+                midSum += mid * mid;
+                highSum += high * high;
+                fluxSum += Math.Max(0f, diff - Math.Abs(previous) * 0.08f);
                 previous = sample;
             }
 
             rms[w] = (float)Math.Sqrt(energySum / windowSize);
-            highFrequencyContent[w] = (float)(diffSum / windowSize);
+            lowBand[w] = (float)Math.Sqrt(lowSum / windowSize);
+            midBand[w] = (float)Math.Sqrt(midSum / windowSize);
+            highBand[w] = (float)Math.Sqrt(highSum / windowSize);
+            spectralFlux[w] = (float)(fluxSum / windowSize);
         }
 
         float[] onset = new float[totalWindows];
         for (int w = 1; w < totalWindows; w++)
         {
             float energyRise = Math.Max(0f, rms[w] - rms[w - 1]);
-            float transientRise = Math.Max(0f, highFrequencyContent[w] - highFrequencyContent[w - 1]);
-            onset[w] = energyRise * 0.65f + transientRise * 1.35f + rms[w] * 0.18f;
+            float lowRise = Math.Max(0f, lowBand[w] - lowBand[w - 1]);
+            float midRise = Math.Max(0f, midBand[w] - midBand[w - 1]);
+            float highRise = Math.Max(0f, highBand[w] - highBand[w - 1]);
+            float fluxRise = Math.Max(0f, spectralFlux[w] - spectralFlux[w - 1]);
+            onset[w] = lowRise * 1.45f + midRise * 0.95f + highRise * 1.35f + fluxRise * 1.15f + energyRise * 0.55f + rms[w] * 0.10f;
         }
 
         int avgWindowHalf = Math.Max(8, (int)Math.Round(0.45f * sampleRate / hopSize));
         var beats = new List<BeatInfo>();
-        float minInterval = 0.08f;
+        float minInterval = 0.075f;
         float lastBeatTime = -1f;
 
         for (int w = 1; w < totalWindows - 1; w++)
@@ -201,6 +233,7 @@ internal static class WavAnalyzer
             int hi = Math.Min(totalWindows - 1, w + avgWindowHalf);
             float localSum = 0f;
             float localMax = 0f;
+            float variance = 0f;
             for (int j = lo; j <= hi; j++)
             {
                 localSum += onset[j];
@@ -208,7 +241,14 @@ internal static class WavAnalyzer
             }
 
             float localAvg = localSum / (hi - lo + 1);
-            float threshold = localAvg + (localMax - localAvg) * 0.32f;
+            for (int j = lo; j <= hi; j++)
+            {
+                float diff = onset[j] - localAvg;
+                variance += diff * diff;
+            }
+
+            float localStdDev = MathF.Sqrt(variance / (hi - lo + 1));
+            float threshold = localAvg + localStdDev * 0.55f + (localMax - localAvg) * 0.22f;
             float strength = onset[w];
 
             if (strength > threshold && strength >= onset[w - 1] && strength >= onset[w + 1])
@@ -216,8 +256,10 @@ internal static class WavAnalyzer
                 float time = w * hopSize / (float)sampleRate;
                 if (time - lastBeatTime >= minInterval)
                 {
-                    float confidence = localMax <= 0f ? 0f : Math.Clamp(strength / localMax, 0f, 1f);
-                    beats.Add(new BeatInfo(time, rms[w], highFrequencyContent[w], confidence));
+                    float contrast = localStdDev <= 0f ? 0f : Math.Clamp((strength - localAvg) / (localStdDev * 2.4f), 0f, 1f);
+                    float peakRatio = localMax <= 0f ? 0f : Math.Clamp(strength / localMax, 0f, 1f);
+                    float confidence = Math.Clamp(contrast * 0.65f + peakRatio * 0.35f, 0f, 1f);
+                    beats.Add(new BeatInfo(time, rms[w], spectralFlux[w], confidence, lowBand[w], midBand[w], highBand[w]));
                     lastBeatTime = time;
                 }
             }

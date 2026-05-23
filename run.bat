@@ -32,6 +32,13 @@ if exist "%DOTNET_EXE%" (
 )
 
 :: ── Build & Run ──
+set "APP_EXE=%~dp0bin\Release\net9.0-windows\game start.exe"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$app = [System.IO.Path]::GetFullPath($env:APP_EXE); " ^
+    "Get-Process -Name 'game start' -ErrorAction SilentlyContinue | " ^
+    "Where-Object { $_.Path -and ([System.IO.Path]::GetFullPath($_.Path) -ieq $app) } | " ^
+    "Stop-Process -Force"
+
 echo Building...
 "%DOTNET_EXE%" build RhythmGame.csproj -c Release
 if %errorlevel% neq 0 (
@@ -39,4 +46,4 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-start "" "bin\Release\net9.0-windows\game start.exe"
+start "" "%APP_EXE%"

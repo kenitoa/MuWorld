@@ -1,72 +1,157 @@
 namespace RhythmGame;
 
-/// <summary>
-/// WAV 분석 결과로부터 BMS 채보 파일을 난이도별로 자동 생성하는 클래스.
-/// Easy: 초당 1노트, Normal: 초당 6노트, Hard: 초당 9노트.
-/// </summary>
 internal static class ChartGenerator
 {
     private const int LaneCount = 4;
     private const string ChartFolderName = "NoteLane";
+    private static readonly object StatusGate = new();
+    private static int _isGenerating;
+    private static ChartGenerationSnapshot _status = ChartGenerationSnapshot.Idle;
+    internal static string? UserChartDirectoryOverride { get; set; }
 
-    private readonly record struct TempoSegment(float Time, float Bpm);
+    private readonly record struct TempoSegment(float Time, float Bpm, float Confidence = 1f);
+    private readonly record struct ChartPoint(int Measure, float Offset, float Time, float Energy, PatternKind Pattern);
+    private readonly record struct DensitySection(float Start, float End, float Multiplier, PatternKind Pattern);
+    public readonly record struct ChartGenerationSnapshot(
+        bool IsRunning,
+        int TotalSongs,
+        int ProcessedSongs,
+        int GeneratedCharts,
+        int SkippedSongs,
+        string CurrentSong,
+        string LastMessage)
+    {
+        public static ChartGenerationSnapshot Idle => new(false, 0, 0, 0, 0, string.Empty, "Chart generation idle.");
+    }
 
-    /// <summary>
-    /// Songs/InGameBGM 폴더의 오디오 파일을 분석하여 채보를 생성한다.
-    /// 현재 자동 분석은 WAV PCM 파일만 지원한다.
-    /// 이미 생성된 채보가 있으면 건너뛴다.
-    /// </summary>
+    private enum PatternKind
+    {
+        Stream,
+        Stair,
+        Trill,
+        Jack,
+        Chord,
+        Roll,
+        LongHold,
+        Slide,
+        Rest,
+    }
+
     public static void GenerateAllCharts()
+    {
+        GenerateAllChartsCore();
+    }
+
+    public static void BeginGenerateAllChartsAsync()
+    {
+        if (Interlocked.Exchange(ref _isGenerating, 1) == 1)
+            return;
+
+        UpdateStatus(new ChartGenerationSnapshot(true, 0, 0, 0, 0, string.Empty, "Chart generation queued."));
+        Task.Run(() =>
+        {
+            try
+            {
+                GenerateAllChartsCore();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Chart generation worker failed.", ex);
+                UpdateStatus(new ChartGenerationSnapshot(false, 0, 0, 0, 0, string.Empty, "Chart generation failed."));
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _isGenerating, 0);
+            }
+        });
+    }
+
+    public static ChartGenerationSnapshot GetStatus()
+    {
+        lock (StatusGate)
+            return _status;
+    }
+
+    private static void GenerateAllChartsCore()
     {
         string bgmDir = Path.Combine(AppContext.BaseDirectory, "Songs", "InGameBGM", "Original");
         if (!Directory.Exists(bgmDir))
+        {
+            UpdateStatus(new ChartGenerationSnapshot(false, 0, 0, 0, 0, string.Empty, "Song folder missing."));
             return;
+        }
 
         string chartDir = Path.Combine(AppContext.BaseDirectory, ChartFolderName);
         Directory.CreateDirectory(chartDir);
 
         string[] audioFiles = AudioFileCatalog.DiscoverSongFiles(bgmDir);
+        int processed = 0;
+        int generated = 0;
+        int skipped = 0;
+        UpdateStatus(new ChartGenerationSnapshot(true, audioFiles.Length, 0, 0, 0, string.Empty, "Chart generation started."));
 
         foreach (string audioPath in audioFiles)
         {
-            if (!AudioFileCatalog.IsWav(audioPath))
-            {
-                Console.WriteLine($"Chart skipped: {Path.GetFileName(audioPath)} requires WAV PCM analysis support.");
-                continue;
-            }
-
             string songName = Path.GetFileNameWithoutExtension(audioPath);
-            var beats = WavAnalyzer.Analyze(audioPath);
-            if (beats.Count == 0)
-                continue;
-
-            for (int difficulty = 0; difficulty < 3; difficulty++)
+            try
             {
-                string chartFile = Path.Combine(chartDir, GetChartFileName(songName, difficulty));
-
-                if (File.Exists(chartFile))
+                UpdateStatus(new ChartGenerationSnapshot(true, audioFiles.Length, processed, generated, skipped, songName, "Analyzing song."));
+                AudioAnalysisResult analysis = AudioAnalysisPipeline.Analyze(audioPath);
+                if (!analysis.IsSupported || analysis.Beats.Count == 0)
+                {
+                    skipped++;
+                    processed++;
+                    UpdateStatus(new ChartGenerationSnapshot(true, audioFiles.Length, processed, generated, skipped, songName, analysis.Message));
                     continue;
+                }
 
-                float adaptiveScale = GetAdaptiveDifficultyScale(audioPath, difficulty);
-                string bmsContent = GenerateBms(songName, beats, difficulty, adaptiveScale);
-                File.WriteAllText(chartFile, bmsContent);
+                for (int difficulty = 0; difficulty < 3; difficulty++)
+                {
+                    string chartFile = Path.Combine(chartDir, GetChartFileName(songName, difficulty));
+                    if (File.Exists(chartFile))
+                        continue;
+
+                    string bmsContent = GenerateBms(songName, analysis.Beats, difficulty, analysis.DurationSeconds);
+                    File.WriteAllText(chartFile, bmsContent);
+                    generated++;
+                }
+
+                processed++;
+                UpdateStatus(new ChartGenerationSnapshot(true, audioFiles.Length, processed, generated, skipped, songName, "Chart generation running."));
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                processed++;
+                AppLogger.Error($"Chart generation failed for {songName}.", ex);
+                UpdateStatus(new ChartGenerationSnapshot(true, audioFiles.Length, processed, generated, skipped, songName, "Song skipped after error."));
             }
         }
+
+        UpdateStatus(new ChartGenerationSnapshot(false, audioFiles.Length, processed, generated, skipped, string.Empty, $"Chart generation complete. New charts: {generated}, skipped: {skipped}."));
     }
 
-    /// <summary>
-    /// 특정 곡의 채보 파일 이름을 반환한다 (0=easy, 1=normal, 2=hard).
-    /// </summary>
+    private static void UpdateStatus(ChartGenerationSnapshot status)
+    {
+        lock (StatusGate)
+            _status = status;
+    }
+
     public static string GetChartFileName(string songName, int difficultyIndex)
     {
         string prefix = difficultyIndex switch { 0 => "easy", 1 => "normal", _ => "hard" };
-        string safeName = NormalizeSongFileName(songName);
-        return $"{prefix}_{safeName}.bms";
+        return $"{prefix}_{NormalizeSongFileName(songName)}.bms";
+    }
+
+    public static string GetChartFileName(string songName, int difficultyIndex, int laneCount)
+    {
+        string prefix = difficultyIndex switch { 0 => "easy", 1 => "normal", _ => "hard" };
+        return $"{prefix}_{NormalizeSongFileName(songName)}_{Math.Clamp(laneCount, 4, 7)}k.bms";
     }
 
     public static string GetUserChartPath(string songName, int difficultyIndex)
     {
-        string chartDir = Path.Combine(
+        string chartDir = UserChartDirectoryOverride ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RhythmGame",
             "Charts");
@@ -74,488 +159,423 @@ internal static class ChartGenerator
         return Path.Combine(chartDir, GetChartFileName(songName, difficultyIndex));
     }
 
+    public static string GetUserChartPath(string songName, int difficultyIndex, int laneCount)
+    {
+        string chartDir = UserChartDirectoryOverride ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RhythmGame",
+            "Charts");
+
+        return Path.Combine(chartDir, GetChartFileName(songName, difficultyIndex, laneCount));
+    }
+
     public static string EnsureUserEditableChart(string songName, int difficultyIndex)
     {
-        string userChartPath = GetUserChartPath(songName, difficultyIndex);
+        return EnsureUserEditableChart(songName, difficultyIndex, 4);
+    }
+
+    public static string EnsureUserEditableChart(string songName, int difficultyIndex, int laneCount)
+    {
+        laneCount = Math.Clamp(laneCount, 4, 7);
+        string userChartPath = GetUserChartPath(songName, difficultyIndex, laneCount);
         Directory.CreateDirectory(Path.GetDirectoryName(userChartPath)!);
 
         if (File.Exists(userChartPath))
             return userChartPath;
 
+        string laneGeneratedPath = Path.Combine(AppContext.BaseDirectory, ChartFolderName, GetChartFileName(songName, difficultyIndex, laneCount));
         string generatedPath = Path.Combine(AppContext.BaseDirectory, ChartFolderName, GetChartFileName(songName, difficultyIndex));
+        string legacyUserPath = GetUserChartPath(songName, difficultyIndex);
         string defaultPath = Path.Combine(AppContext.BaseDirectory, ChartFolderName, "default.bms");
-        string? sourcePath = File.Exists(generatedPath) ? generatedPath : File.Exists(defaultPath) ? defaultPath : null;
+        string? sourcePath = File.Exists(laneGeneratedPath)
+            ? laneGeneratedPath
+            : File.Exists(legacyUserPath)
+                ? legacyUserPath
+                : File.Exists(generatedPath)
+                    ? generatedPath
+                    : File.Exists(defaultPath)
+                        ? defaultPath
+                        : null;
 
-        if (sourcePath is not null)
-            File.Copy(sourcePath, userChartPath, overwrite: false);
-        else
+        if (sourcePath is null)
             File.WriteAllText(userChartPath, BuildBmsString(songName, 120f, [], [new TempoSegment(0f, 120f)]));
+        else
+            File.Copy(sourcePath, userChartPath, overwrite: false);
 
         return userChartPath;
     }
 
-    private static float GetAdaptiveDifficultyScale(string audioPath, int difficultyIndex)
+    public static void SaveUserChart(string songName, int difficultyIndex, int laneCount, float bpm, IReadOnlyList<LaneNote> notes)
     {
-        string songId = AudioFileCatalog.GetSongId(audioPath);
-        SongScoreRecord? score = new SongDataStore().TryGetScore(songId);
-        if (score is null || score.PlayCount < 2)
-            return 1f;
-
-        float accuracy = score.BestAccuracy;
-        if (accuracy < 60f)
-            return 0.72f;
-        if (accuracy < 75f)
-            return 0.84f;
-        if (accuracy < 88f)
-            return 0.93f;
-        if (accuracy >= 96f && difficultyIndex < 2)
-            return 1.08f;
-        if (accuracy >= 98f && difficultyIndex == 2)
-            return 1.05f;
-
-        return 1f;
+        string path = GetUserChartPath(songName, difficultyIndex, laneCount);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        ChartValidationResult validated = ChartValidator.ValidateAndFilter(notes, laneCount);
+        string content = BuildBmsStringFromLaneNotes(songName, bpm, validated.Notes, [new TempoSegment(0f, Math.Clamp(bpm, 40f, 300f))]);
+        File.WriteAllText(path, content);
     }
 
-    /// <summary>
-    /// 난이도별 초당 노트 수를 반환한다.
-    /// </summary>
+    private static string GenerateBms(string songName, List<WavAnalyzer.BeatInfo> beats, int difficulty, float analyzedDurationSeconds)
+    {
+        List<TempoSegment> tempoMap = DetectTempoMap(beats);
+        float bpm = tempoMap[0].Bpm;
+        float duration = Math.Max(analyzedDurationSeconds, beats.Count > 0 ? beats[^1].Time + 2f : 60f);
+        float downbeatOffset = EstimateDownbeatOffset(beats, bpm);
+        List<DensitySection> densityCurve = BuildDensityCurve(beats, duration, difficulty);
+        int targetNotes = Math.Max(10, (int)MathF.Round(GetNotesPerSecond(difficulty) * duration));
+
+        List<ChartPoint> points = SelectChartPoints(beats, targetNotes, difficulty, bpm, downbeatOffset, densityCurve);
+        IReadOnlyList<LaneNote> notes = AssignGeneratedNotes(points, difficulty, LaneCount, bpm, densityCurve);
+        ChartValidationResult validated = ChartValidator.ValidateAndFilter(notes, LaneCount);
+        return BuildBmsStringFromLaneNotes(songName, bpm, validated.Notes, tempoMap);
+    }
+
     private static float GetNotesPerSecond(int difficulty)
     {
         return difficulty switch
         {
-            0 => 1f,    // Easy: 초당 1노트
-            1 => 6f,    // Normal: 초당 6노트
-            _ => 9f,    // Hard: 초당 9노트
+            0 => 1.0f,
+            1 => 5.0f,
+            _ => 7.0f,
         };
     }
 
-    /// <summary>
-    /// 곡 길이와 난이도를 바탕으로 목표 노트 수를 계산한다.
-    /// </summary>
-    private static int GetTargetNoteCount(int difficulty, float songDuration, float adaptiveScale)
-    {
-        float nps = GetNotesPerSecond(difficulty);
-        return Math.Max(10, (int)MathF.Round(nps * songDuration * adaptiveScale));
-    }
-
-    /// <summary>
-    /// 난이도별 박자 세분화(subdivision) 수를 반환한다.
-    /// </summary>
     private static int GetSubdivision(int difficulty)
     {
         return difficulty switch
         {
-            0 => 8,   // 8분음표 (초당 3~4 지원)
-            1 => 16,  // 16분음표 (초당 8~9 지원)
-            _ => 24,  // 24분음표 (초당 12~13 지원)
+            0 => 8,
+            1 => 16,
+            _ => 24,
         };
     }
 
-    private static string GenerateBms(string songName, List<WavAnalyzer.BeatInfo> beats, int difficulty, float adaptiveScale)
+    private static List<ChartPoint> SelectChartPoints(
+        List<WavAnalyzer.BeatInfo> beats,
+        int targetNotes,
+        int difficulty,
+        float bpm,
+        float downbeatOffset,
+        List<DensitySection> densityCurve)
     {
+        float secondsPerMeasure = 240f / bpm;
         int subdivision = GetSubdivision(difficulty);
 
-        // BPM 추정
-        List<TempoSegment> tempoMap = DetectTempoMap(beats);
-        float estimatedBpm = tempoMap.Count > 0 ? tempoMap[0].Bpm : EstimateBpm(beats);
-        float secondsPerMeasure = 240f / estimatedBpm;
+        var selected = beats
+            .OrderByDescending(b => (b.Confidence * 2f + b.Energy + b.Flux + b.LowEnergy * 0.6f + b.HighEnergy * 0.4f) * GetDensityMultiplierAt(densityCurve, b.Time))
+            .Take(Math.Min(targetNotes, beats.Count))
+            .Select(b => ToChartPoint(b.Time, b.Energy + b.Flux, secondsPerMeasure, subdivision, downbeatOffset, GetPatternAt(densityCurve, b.Time)))
+            .ToList();
 
-        // 곡 길이 추정 (마지막 비트 기준)
-        float songDuration = beats.Count > 0 ? beats[^1].Time + 2f : 60f;
-        int totalMeasures = Math.Max(4, (int)MathF.Ceiling(songDuration / secondsPerMeasure));
-        int targetNotes = GetTargetNoteCount(difficulty, songDuration, adaptiveScale);
+        if (selected.Count < targetNotes)
+            FillEvenGrid(selected, targetNotes, beats[^1].Time + 2f, secondsPerMeasure, subdivision, downbeatOffset, densityCurve);
 
-        // 1단계: 박자 그리드에 맞는 모든 가능한 위치 생성
-        var gridPositions = new List<(int measure, float offset, float time, float energy)>();
-        var beatLookup = new Dictionary<int, float>();
+        return selected
+            .GroupBy(p => (p.Measure, Cell: (int)MathF.Round(p.Offset * subdivision)))
+            .Select(g => g.OrderByDescending(p => p.Energy).First())
+            .OrderBy(p => p.Time)
+            .Take(targetNotes)
+            .ToList();
+    }
 
-        foreach (var beat in beats)
+    private static ChartPoint ToChartPoint(float time, float energy, float secondsPerMeasure, int subdivision, float downbeatOffset, PatternKind pattern)
+    {
+        float position = Math.Max(0f, (time - downbeatOffset) / secondsPerMeasure);
+        int measure = (int)MathF.Floor(position);
+        float offset = position - measure;
+        offset = Math.Clamp(MathF.Round(offset * subdivision) / subdivision, 0f, 0.999f);
+        return new ChartPoint(measure, offset, time, energy, pattern);
+    }
+
+    private static void FillEvenGrid(
+        List<ChartPoint> points,
+        int targetNotes,
+        float duration,
+        float secondsPerMeasure,
+        int subdivision,
+        float downbeatOffset,
+        List<DensitySection> densityCurve)
+    {
+        float step = duration / Math.Max(1, targetNotes);
+        for (float time = 0f; points.Count < targetNotes && time <= duration; time += step)
+            points.Add(ToChartPoint(time, 0f, secondsPerMeasure, subdivision, downbeatOffset, GetPatternAt(densityCurve, time)));
+    }
+
+    private static IReadOnlyList<LaneNote> AssignGeneratedNotes(
+        List<ChartPoint> points,
+        int difficulty,
+        int laneCount,
+        float bpm,
+        List<DensitySection> densityCurve)
+    {
+        float secondsPerMeasure = 240f / bpm;
+        var notes = new List<LaneNote>(points.Count + points.Count / 5);
+        int previousLane = -1;
+        int sameLaneRun = 0;
+        int sameHandRun = 0;
+        int previousHand = -1;
+        float previousTime = -10f;
+        float centerLaneCooldownUntil = -10f;
+
+        for (int i = 0; i < points.Count; i++)
         {
-            int gridKey = (int)MathF.Round(beat.Time * subdivision * 2);
-            beatLookup.TryAdd(gridKey, beat.Energy);
-        }
+            ChartPoint point = points[i];
+            float noteTime = (point.Measure + point.Offset) * secondsPerMeasure;
+            int lane = PickPatternLane(point, i, difficulty, laneCount, previousLane, previousHand, sameHandRun, noteTime, previousTime, centerLaneCooldownUntil);
 
-        for (int m = 0; m < totalMeasures; m++)
-        {
-            for (int s = 0; s < subdivision; s++)
+            if (lane == previousLane)
             {
-                float offset = s / (float)subdivision;
-                float time = (m + offset) * secondsPerMeasure;
-
-                if (time > songDuration)
-                    break;
-
-                int gridKey = (int)MathF.Round(time * subdivision * 2);
-                float energy = beatLookup.TryGetValue(gridKey, out float e) ? e : 0f;
-
-                gridPositions.Add((m, offset, time, energy));
-            }
-        }
-
-        if (gridPositions.Count == 0)
-            return BuildBmsString(songName, estimatedBpm, [], tempoMap);
-
-        // 2단계: 위치 선택 (에너지 우선 + 균등 분배)
-        var rng = new Random(HashCode.Combine(songName.GetHashCode(), difficulty));
-        var selectedPositions = SelectNotePositions(gridPositions, targetNotes, rng);
-
-        // 3단계: 패턴 기반 레인 배정 (동시 노트 없이, 리듬게임 패턴 기술 활용)
-        var notes = AssignLanesWithPatterns(selectedPositions, difficulty, estimatedBpm, secondsPerMeasure, rng);
-
-        return BuildBmsString(songName, estimatedBpm, notes, tempoMap);
-    }
-
-    // ── 패턴 종류 ─────────────────────────────────────────────────────────────
-    private enum ChartPattern
-    {
-        Stream,     // 순차 흐름: 0→1→2→3→2→1 (물 흐르듯 자연스럽게)
-        Stair,      // 계단: 0→1→2→3 또는 3→2→1→0 (한 방향)
-        Trill,      // 트릴: 두 레인 빠른 교차 (예: 1↔3, 0↔2)
-        Jack,       // 잭: 같은 레인 연타
-        Zigzag,     // 지그재그: 양 끝을 오가며 (0→3→1→2 등)
-        Swing,      // 스윙: 인접 레인 왕복 (1→2→1→2)
-        Spread,     // 스프레드: 중앙→외곽 또는 외곽→중앙
-    }
-
-    /// <summary>
-    /// 난이도에 따른 패턴 가중치 테이블.
-    /// Easy는 단순 패턴 위주, Hard는 다양한 패턴을 적극 활용.
-    /// </summary>
-    private static (ChartPattern pattern, float weight)[] GetPatternWeights(int difficulty)
-    {
-        return difficulty switch
-        {
-            0 => // Easy: 단순하고 예측 가능
-            [
-                (ChartPattern.Stream, 0.50f),
-                (ChartPattern.Stair, 0.30f),
-                (ChartPattern.Swing, 0.20f),
-            ],
-            1 => // Normal: 다양한 패턴 혼합
-            [
-                (ChartPattern.Stream, 0.25f),
-                (ChartPattern.Stair, 0.20f),
-                (ChartPattern.Trill, 0.15f),
-                (ChartPattern.Jack, 0.10f),
-                (ChartPattern.Zigzag, 0.15f),
-                (ChartPattern.Swing, 0.10f),
-                (ChartPattern.Spread, 0.05f),
-            ],
-            _ => // Hard: 어려운 패턴 적극 활용
-            [
-                (ChartPattern.Stream, 0.15f),
-                (ChartPattern.Stair, 0.15f),
-                (ChartPattern.Trill, 0.20f),
-                (ChartPattern.Jack, 0.15f),
-                (ChartPattern.Zigzag, 0.15f),
-                (ChartPattern.Swing, 0.10f),
-                (ChartPattern.Spread, 0.10f),
-            ],
-        };
-    }
-
-    /// <summary>
-    /// 패턴 한 구간의 길이 (노트 수). 난이도가 높을수록 짧은 구간도 사용.
-    /// </summary>
-    private static int GetPatternLength(int difficulty, Random rng)
-    {
-        return difficulty switch
-        {
-            0 => rng.Next(6, 12),   // Easy: 긴 구간 (안정적)
-            1 => rng.Next(4, 10),   // Normal: 중간 구간
-            _ => rng.Next(3, 8),    // Hard: 짧은 구간 (빈번한 전환)
-        };
-    }
-
-    private static ChartPattern PickPattern(Random rng, (ChartPattern pattern, float weight)[] weights)
-    {
-        float roll = rng.NextSingle();
-        float cumulative = 0f;
-        foreach (var (pattern, weight) in weights)
-        {
-            cumulative += weight;
-            if (roll <= cumulative)
-                return pattern;
-        }
-        return weights[^1].pattern;
-    }
-
-    /// <summary>
-    /// 선택된 위치들에 리듬게임 패턴 기술을 적용하여 레인을 배정한다.
-    /// 동시 노트(겹침)는 생성하지 않는다.
-    /// </summary>
-    private static List<(int measure, int lane, float offset)> AssignLanesWithPatterns(
-        List<(int measure, float offset, float time, float energy)> positions,
-        int difficulty, float bpm, float secondsPerMeasure, Random rng)
-    {
-        const int MaxSameLane = 2; // 같은 레인 최대 연속 허용 수
-        var notes = new List<(int measure, int lane, float offset)>(positions.Count);
-        var patternWeights = GetPatternWeights(difficulty);
-
-        int i = 0;
-        int prevLane = rng.Next(LaneCount);
-        int sameLaneCount = 1;
-        ChartPattern currentPattern = PickPattern(rng, patternWeights);
-        int patternRemaining = GetPatternLength(difficulty, rng);
-        int jackConsecutive = 0;
-
-        // ── 레인 균등 분포 추적 ──
-        int[] laneCounts = new int[LaneCount];
-        const int BalanceCheckInterval = 8; // 8노트마다 균형 체크
-
-        // 패턴별 상태
-        int stairDir = rng.Next(2) == 0 ? 1 : -1;
-        int trillLaneA, trillLaneB;
-        (trillLaneA, trillLaneB) = PickBalancedPair(laneCounts, rng);
-        bool trillFlip = false;
-        int zigzagPhase = 0;
-        int swingLaneA, swingLaneB;
-        (swingLaneA, swingLaneB) = PickBalancedAdjacentPair(laneCounts, rng);
-        bool swingFlip = false;
-        bool spreadOutward = rng.Next(2) == 0;
-        int spreadPhase = 0;
-
-        while (i < positions.Count)
-        {
-            // 패턴 구간 소진 시 새 패턴 선택
-            if (patternRemaining <= 0)
-            {
-                ChartPattern prevPattern = currentPattern;
-                // 같은 패턴이 연속되지 않도록 (가능하면)
-                for (int attempt = 0; attempt < 5; attempt++)
-                {
-                    currentPattern = PickPattern(rng, patternWeights);
-                    if (currentPattern != prevPattern || patternWeights.Length <= 2)
-                        break;
-                }
-                patternRemaining = GetPatternLength(difficulty, rng);
-
-                // 새 패턴 상태 초기화 (레인 균형을 고려하여 선택)
-                stairDir = rng.Next(2) == 0 ? 1 : -1;
-                (trillLaneA, trillLaneB) = PickBalancedPair(laneCounts, rng);
-                trillFlip = false;
-                zigzagPhase = 0;
-                (swingLaneA, swingLaneB) = PickBalancedAdjacentPair(laneCounts, rng);
-                swingFlip = false;
-                spreadOutward = rng.Next(2) == 0;
-                spreadPhase = 0;
-                jackConsecutive = 0;
-            }
-
-            var pos = positions[i];
-            int lane;
-
-            switch (currentPattern)
-            {
-                case ChartPattern.Stream:
-                    // 순차 흐름: 올라갔다 내려오기 (0→1→2→3→2→1→0→…)
-                    lane = prevLane + stairDir;
-                    if (lane >= LaneCount) { lane = LaneCount - 2; stairDir = -1; }
-                    else if (lane < 0) { lane = 1; stairDir = 1; }
-                    break;
-
-                case ChartPattern.Stair:
-                    // 계단: 한 방향으로만 (끝에 도달하면 반대편에서 재시작)
-                    lane = prevLane + stairDir;
-                    if (lane >= LaneCount) { lane = 0; }
-                    else if (lane < 0) { lane = LaneCount - 1; }
-                    break;
-
-                case ChartPattern.Trill:
-                    // 트릴: 두 레인 교차
-                    lane = trillFlip ? trillLaneB : trillLaneA;
-                    trillFlip = !trillFlip;
-                    break;
-
-                case ChartPattern.Jack:
-                    // 잭: 같은 레인 2연타 후 반드시 이동
-                    if (jackConsecutive >= 2)
-                    {
-                        prevLane = GetLeastUsedLane(laneCounts, prevLane, rng);
-                        jackConsecutive = 0;
-                    }
-                    lane = prevLane;
-                    jackConsecutive++;
-                    break;
-
-                case ChartPattern.Zigzag:
-                    // 지그재그: 0→3→1→2→0→3→… 식 양극단 교차
-                    lane = (zigzagPhase % 4) switch
-                    {
-                        0 => 0,
-                        1 => 3,
-                        2 => 1,
-                        _ => 2,
-                    };
-                    zigzagPhase++;
-                    break;
-
-                case ChartPattern.Swing:
-                    // 스윙: 인접 2레인 왕복
-                    lane = swingFlip ? swingLaneB : swingLaneA;
-                    swingFlip = !swingFlip;
-                    break;
-
-                case ChartPattern.Spread:
-                    // 스프레드: 중앙→외곽 또는 외곽→중앙
-                    int[] outwardOrder = [1, 2, 0, 3];
-                    int[] inwardOrder = [0, 3, 1, 2];
-                    int[] order = spreadOutward ? outwardOrder : inwardOrder;
-                    lane = order[spreadPhase % 4];
-                    spreadPhase++;
-                    break;
-
-                default:
-                    lane = rng.Next(LaneCount);
-                    break;
-            }
-
-            lane = Math.Clamp(lane, 0, LaneCount - 1);
-
-            // 같은 레인 3연속 이상 방지 (모든 패턴 공통)
-            if (lane == prevLane)
-            {
-                sameLaneCount++;
-                if (sameLaneCount > MaxSameLane)
-                {
-                    lane = GetLeastUsedLane(laneCounts, prevLane, rng);
-                    sameLaneCount = 1;
-                }
+                sameLaneRun++;
+                bool allowJack = point.Pattern == PatternKind.Jack && difficulty > 0;
+                if (!allowJack && (sameLaneRun > 1 || noteTime - previousTime < 0.22f))
+                    lane = (lane + 1 + difficulty) % laneCount;
             }
             else
             {
-                sameLaneCount = 1;
+                sameLaneRun = 1;
             }
 
-            // 주기적 균형 보정: 특정 레인이 평균 대비 25% 이상 많으면 가장 적은 레인으로 유도
-            if (notes.Count > 0 && notes.Count % BalanceCheckInterval == 0)
+            int hand = GetHand(lane, laneCount);
+            if (hand == previousHand && hand >= 0)
+                sameHandRun++;
+            else
+                sameHandRun = 1;
+
+            NoteType type = PickPatternNoteType(point.Pattern, difficulty, laneCount, i);
+            float duration = type switch
             {
-                float avg = notes.Count / (float)LaneCount;
-                if (laneCounts[lane] > avg * 1.25f && currentPattern != ChartPattern.Trill
-                    && currentPattern != ChartPattern.Zigzag && currentPattern != ChartPattern.Spread)
+                NoteType.Long => difficulty == 0 ? 0.45f : 0.62f + difficulty * 0.12f,
+                NoteType.Slide => difficulty == 0 ? 0.38f : 0.48f + difficulty * 0.08f,
+                _ => 0f,
+            };
+            int endLane = type == NoteType.Slide
+                ? PickSlideEndLane(lane, point.Pattern, laneCount, i)
+                : lane;
+
+            notes.Add(new LaneNote(noteTime, lane, type, duration, endLane));
+            if (point.Pattern == PatternKind.Chord && difficulty > 0 && notes.Count < points.Count * 2)
+            {
+                int chordLane = PickChordLane(lane, laneCount, hand);
+                notes.Add(new LaneNote(noteTime, chordLane));
+            }
+
+            if (laneCount is 5 or 7 && lane == laneCount / 2)
+                centerLaneCooldownUntil = noteTime + 0.65f;
+
+            previousLane = lane;
+            previousHand = GetHand(lane, laneCount);
+            previousTime = noteTime;
+        }
+
+        return notes
+            .OrderBy(n => n.Time)
+            .ThenBy(n => n.Lane)
+            .ToList();
+    }
+
+    private static int PickPatternLane(
+        ChartPoint point,
+        int index,
+        int difficulty,
+        int laneCount,
+        int previousLane,
+        int previousHand,
+        int sameHandRun,
+        float noteTime,
+        float previousTime,
+        float centerLaneCooldownUntil)
+    {
+        int lane = point.Pattern switch
+        {
+            PatternKind.Stair => (point.Measure + index) % laneCount,
+            PatternKind.Trill => index % 2 == 0 ? Math.Max(0, previousLane) : (Math.Max(0, previousLane) + 2) % laneCount,
+            PatternKind.Jack => previousLane >= 0 ? previousLane : index % laneCount,
+            PatternKind.Roll => (index * 2 + point.Measure) % laneCount,
+            PatternKind.Slide => (point.Measure + index + difficulty) % laneCount,
+            PatternKind.LongHold => (point.Measure * 2 + index) % laneCount,
+            PatternKind.Chord => (index + point.Measure + difficulty) % laneCount,
+            _ => difficulty switch
+            {
+                0 => (point.Measure + index) % laneCount,
+                1 => (point.Measure * 2 + index) % laneCount,
+                _ => (index * 2 + point.Measure + (int)(point.Offset * 8)) % laneCount,
+            },
+        };
+
+        if (laneCount is 5 or 7 && lane == laneCount / 2 && noteTime < centerLaneCooldownUntil)
+            lane = (lane + 1 + difficulty) % laneCount;
+
+        int hand = GetHand(lane, laneCount);
+        if (sameHandRun >= 3 && hand == previousHand && point.Pattern != PatternKind.Trill)
+        {
+            int mirrored = laneCount - 1 - lane;
+            if (GetHand(mirrored, laneCount) != previousHand)
+                lane = mirrored;
+        }
+
+        if (previousLane == lane && noteTime - previousTime < 0.18f && point.Pattern != PatternKind.Jack)
+            lane = (lane + 1) % laneCount;
+
+        return Math.Clamp(lane, 0, laneCount - 1);
+    }
+
+    private static NoteType PickPatternNoteType(PatternKind pattern, int difficulty, int laneCount, int index)
+    {
+        if (pattern == PatternKind.LongHold)
+            return NoteType.Long;
+        if (pattern == PatternKind.Slide && laneCount > 4)
+            return NoteType.Slide;
+        if (difficulty > 0 && pattern == PatternKind.Roll && index % 12 == 5)
+            return NoteType.Long;
+        if (difficulty > 1 && laneCount > 4 && pattern == PatternKind.Stair && index % 16 == 9)
+            return NoteType.Slide;
+        return NoteType.Tap;
+    }
+
+    private static int PickSlideEndLane(int lane, PatternKind pattern, int laneCount, int index)
+    {
+        int direction = (pattern == PatternKind.Stair || index % 2 == 0) ? 1 : -1;
+        int endLane = lane + direction * (index % 3 == 0 ? 2 : 1);
+        if (endLane < 0 || endLane >= laneCount)
+            endLane = lane - direction;
+        return Math.Clamp(endLane, 0, laneCount - 1);
+    }
+
+    private static int PickChordLane(int lane, int laneCount, int hand)
+    {
+        int candidate = laneCount - 1 - lane;
+        if (candidate != lane)
+            return candidate;
+
+        return hand <= 0 ? Math.Min(laneCount - 1, lane + 1) : Math.Max(0, lane - 1);
+    }
+
+    private static int GetHand(int lane, int laneCount)
+    {
+        int center = laneCount / 2;
+        if (laneCount is 5 or 7 && lane == center)
+            return -1;
+
+        return lane < center ? 0 : 1;
+    }
+
+    private static float EstimateDownbeatOffset(List<WavAnalyzer.BeatInfo> beats, float bpm)
+    {
+        if (beats.Count < 4)
+            return 0f;
+
+        float beatSeconds = 60f / Math.Clamp(bpm, 40f, 240f);
+        float bestOffset = 0f;
+        float bestScore = float.NegativeInfinity;
+
+        for (int candidate = 0; candidate < 16; candidate++)
+        {
+            float offset = candidate * beatSeconds / 16f;
+            float score = 0f;
+            int count = 0;
+            foreach (WavAnalyzer.BeatInfo beat in beats)
+            {
+                if (beat.Time < offset)
+                    continue;
+
+                float position = (beat.Time - offset) / beatSeconds;
+                float distanceToMeasure = MathF.Abs(position % 4f);
+                distanceToMeasure = MathF.Min(distanceToMeasure, 4f - distanceToMeasure);
+                if (distanceToMeasure <= 0.22f)
                 {
-                    lane = GetLeastUsedLane(laneCounts, -1, rng);
-                    sameLaneCount = (lane == prevLane) ? sameLaneCount + 1 : 1;
+                    score += beat.LowEnergy * 1.35f + beat.Confidence * 0.75f + beat.Energy * 0.4f;
+                    count++;
                 }
             }
 
-            laneCounts[lane]++;
-            notes.Add((pos.measure, lane, pos.offset));
-            prevLane = lane;
-            patternRemaining--;
-            i++;
-        }
+            if (count > 0)
+                score /= count;
 
-        return notes;
-    }
-
-    /// <summary>
-    /// 가장 적게 사용된 레인을 반환한다 (excludeLane 제외).
-    /// </summary>
-    private static int GetLeastUsedLane(int[] laneCounts, int excludeLane, Random rng)
-    {
-        int minCount = int.MaxValue;
-        for (int l = 0; l < LaneCount; l++)
-        {
-            if (l != excludeLane && laneCounts[l] < minCount)
-                minCount = laneCounts[l];
-        }
-
-        // 최소 사용량인 레인들 중 랜덤 선택
-        Span<int> candidates = stackalloc int[LaneCount];
-        int count = 0;
-        for (int l = 0; l < LaneCount; l++)
-        {
-            if (l != excludeLane && laneCounts[l] == minCount)
-                candidates[count++] = l;
-        }
-
-        return count > 0 ? candidates[rng.Next(count)] : (excludeLane + 1) % LaneCount;
-    }
-
-    /// <summary>
-    /// 사용량이 적은 레인 2개를 쌍으로 선택한다 (트릴용).
-    /// </summary>
-    private static (int a, int b) PickBalancedPair(int[] laneCounts, Random rng)
-    {
-        // 사용량 오름차순으로 정렬된 레인 인덱스
-        Span<int> sorted = stackalloc int[LaneCount];
-        for (int l = 0; l < LaneCount; l++) sorted[l] = l;
-        // 간단한 선택 정렬
-        for (int x = 0; x < LaneCount - 1; x++)
-            for (int y = x + 1; y < LaneCount; y++)
-                if (laneCounts[sorted[y]] < laneCounts[sorted[x]])
-                    (sorted[x], sorted[y]) = (sorted[y], sorted[x]);
-
-        // 가장 적게 사용된 2개 선택 (약간의 랜덤성 추가)
-        int a = sorted[0];
-        int b = sorted[1];
-        // 50% 확률로 순서 교체 (시작 레인 다양화)
-        if (rng.Next(2) == 0) (a, b) = (b, a);
-        return (a, b);
-    }
-
-    /// <summary>
-    /// 사용량이 적은 인접 레인 쌍을 선택한다 (스윙용).
-    /// </summary>
-    private static (int a, int b) PickBalancedAdjacentPair(int[] laneCounts, Random rng)
-    {
-        // 인접 쌍: (0,1), (1,2), (2,3)
-        int bestPair = 0;
-        int bestSum = int.MaxValue;
-        for (int p = 0; p < LaneCount - 1; p++)
-        {
-            int sum = laneCounts[p] + laneCounts[p + 1];
-            if (sum < bestSum || (sum == bestSum && rng.Next(2) == 0))
+            if (score > bestScore)
             {
-                bestSum = sum;
-                bestPair = p;
-            }
-        }
-        return (bestPair, bestPair + 1);
-    }
-
-    /// <summary>
-    /// 에너지 우선 + 균등 분배로 목표 노트 수만큼 위치를 선택한다.
-    /// </summary>
-    private static List<(int measure, float offset, float time, float energy)> SelectNotePositions(
-        List<(int measure, float offset, float time, float energy)> gridPositions,
-        int targetNotes, Random rng)
-    {
-        var selectedPositions = new List<(int measure, float offset, float time, float energy)>();
-
-        var energyPositions = gridPositions.Where(p => p.energy > 0).OrderByDescending(p => p.energy).ToList();
-        var nonEnergyPositions = gridPositions.Where(p => p.energy == 0).ToList();
-
-        int energyTake = Math.Min(energyPositions.Count, targetNotes);
-        selectedPositions.AddRange(energyPositions.Take(energyTake));
-
-        int remaining = targetNotes - selectedPositions.Count;
-        if (remaining > 0 && nonEnergyPositions.Count > 0)
-        {
-            nonEnergyPositions = nonEnergyPositions.OrderBy(p => p.time).ToList();
-            int step = Math.Max(1, nonEnergyPositions.Count / remaining);
-            for (int i = 0; i < nonEnergyPositions.Count && selectedPositions.Count < targetNotes; i += step)
-            {
-                selectedPositions.Add(nonEnergyPositions[i]);
+                bestScore = score;
+                bestOffset = offset;
             }
         }
 
-        if (selectedPositions.Count < targetNotes && nonEnergyPositions.Count > 0)
+        return Math.Clamp(bestOffset, 0f, beatSeconds);
+    }
+
+    private static List<DensitySection> BuildDensityCurve(List<WavAnalyzer.BeatInfo> beats, float duration, int difficulty)
+    {
+        float sectionLength = difficulty == 0 ? 12f : 8f;
+        var sections = new List<DensitySection>();
+        if (duration <= 0f)
+            return [new DensitySection(0f, 60f, 1f, PatternKind.Stream)];
+
+        float globalAverage = beats.Count == 0 ? 0f : beats.Average(b => b.Energy + b.Flux + b.HighEnergy);
+        for (float start = 0f; start < duration; start += sectionLength)
         {
-            var usedTimes = new HashSet<float>(selectedPositions.Select(p => p.time));
-            foreach (var p in nonEnergyPositions)
-            {
-                if (selectedPositions.Count >= targetNotes) break;
-                if (!usedTimes.Contains(p.time))
+            float end = Math.Min(duration, start + sectionLength);
+            var local = beats.Where(b => b.Time >= start && b.Time < end).ToList();
+            float localAverage = local.Count == 0 ? 0f : local.Average(b => b.Energy + b.Flux + b.HighEnergy);
+            float intensity = globalAverage <= 0f ? 1f : localAverage / globalAverage;
+            PatternKind pattern = PickSectionPattern(local, intensity, difficulty);
+            float multiplier = pattern == PatternKind.Rest
+                ? 0.35f
+                : intensity switch
                 {
-                    selectedPositions.Add(p);
-                    usedTimes.Add(p.time);
-                }
+                    < 0.72f => 0.72f,
+                    > 1.45f => 1.28f,
+                    > 1.12f => 1.12f,
+                    _ => 0.95f,
+                };
+
+            if (start < 2f || duration - end < 2f)
+            {
+                multiplier = Math.Min(multiplier, 0.55f);
+                pattern = PatternKind.Rest;
             }
+
+            sections.Add(new DensitySection(start, end, multiplier, pattern));
         }
 
-        return selectedPositions.OrderBy(p => p.time).ToList();
+        return sections;
+    }
+
+    private static PatternKind PickSectionPattern(List<WavAnalyzer.BeatInfo> beats, float intensity, int difficulty)
+    {
+        if (beats.Count < 2 || intensity < 0.45f)
+            return PatternKind.Rest;
+
+        float lowShare = beats.Sum(b => b.LowEnergy) / Math.Max(0.0001f, beats.Sum(b => b.LowEnergy + b.MidEnergy + b.HighEnergy));
+        float highShare = beats.Sum(b => b.HighEnergy) / Math.Max(0.0001f, beats.Sum(b => b.LowEnergy + b.MidEnergy + b.HighEnergy));
+        float averageGap = beats.Zip(beats.Skip(1), (a, b) => b.Time - a.Time).Where(g => g > 0.05f && g < 1.5f).DefaultIfEmpty(0.5f).Average();
+
+        if (difficulty > 0 && intensity > 1.45f && highShare > 0.34f)
+            return PatternKind.Chord;
+        if (difficulty > 1 && averageGap < 0.18f)
+            return PatternKind.Roll;
+        if (difficulty > 1 && averageGap is >= 0.22f and <= 0.36f && intensity > 1.05f)
+            return PatternKind.Jack;
+        if (difficulty > 0 && lowShare > 0.48f && intensity > 1.05f)
+            return PatternKind.LongHold;
+        if (difficulty > 0 && highShare > 0.36f)
+            return PatternKind.Stair;
+        if (difficulty > 1 && intensity > 1.1f)
+            return PatternKind.Trill;
+
+        return PatternKind.Stream;
+    }
+
+    private static PatternKind GetPatternAt(List<DensitySection> densityCurve, float time)
+    {
+        return densityCurve.FirstOrDefault(s => time >= s.Start && time < s.End).Pattern;
+    }
+
+    private static float GetDensityMultiplierAt(List<DensitySection> densityCurve, float time)
+    {
+        foreach (DensitySection section in densityCurve)
+        {
+            if (time >= section.Start && time < section.End)
+                return section.Multiplier;
+        }
+
+        return 1f;
     }
 
     private static List<TempoSegment> DetectTempoMap(List<WavAnalyzer.BeatInfo> beats)
@@ -563,12 +583,14 @@ internal static class ChartGenerator
         float baseBpm = EstimateBpm(beats);
         var segments = new List<TempoSegment> { new(0f, baseBpm) };
 
-        if (beats.Count < 12)
+        if (beats.Count < 16)
             return segments;
 
-        const int window = 8;
+        const int window = 12;
+        const float minSegmentSeconds = 8f;
+        const float minConfidence = 0.42f;
         float previousBpm = baseBpm;
-
+        float previousSegmentTime = 0f;
         for (int i = window; i < beats.Count - window; i += window)
         {
             var intervals = new List<float>(window);
@@ -583,15 +605,47 @@ internal static class ChartGenerator
                 continue;
 
             intervals.Sort();
-            float localBpm = NormalizeBpm(60f / intervals[intervals.Count / 2]);
-            if (MathF.Abs(localBpm - previousBpm) < 7f)
+            float median = intervals[intervals.Count / 2];
+            float averageDeviation = intervals.Average(g => MathF.Abs(g - median));
+            float confidence = Math.Clamp(1f - averageDeviation / Math.Max(0.001f, median * 0.38f), 0f, 1f);
+            float bpm = NormalizeBpm(60f / median);
+            float segmentTime = beats[i].Time;
+
+            if (confidence < minConfidence ||
+                segmentTime - previousSegmentTime < minSegmentSeconds ||
+                MathF.Abs(bpm - previousBpm) < 5f)
                 continue;
 
-            segments.Add(new TempoSegment(beats[i].Time, localBpm));
-            previousBpm = localBpm;
+            segments.Add(new TempoSegment(segmentTime, bpm, confidence));
+            previousBpm = bpm;
+            previousSegmentTime = segmentTime;
         }
 
-        return segments;
+        return MergeTempoSegments(segments);
+    }
+
+    private static List<TempoSegment> MergeTempoSegments(List<TempoSegment> segments)
+    {
+        if (segments.Count <= 1)
+            return segments;
+
+        var merged = new List<TempoSegment> { segments[0] };
+        foreach (TempoSegment segment in segments.Skip(1))
+        {
+            TempoSegment previous = merged[^1];
+            if (MathF.Abs(previous.Bpm - segment.Bpm) < 4f)
+            {
+                float bpm = (previous.Bpm * previous.Confidence + segment.Bpm * segment.Confidence) /
+                    Math.Max(0.001f, previous.Confidence + segment.Confidence);
+                merged[^1] = previous with { Bpm = MathF.Round(bpm), Confidence = Math.Max(previous.Confidence, segment.Confidence) };
+            }
+            else
+            {
+                merged.Add(segment);
+            }
+        }
+
+        return merged;
     }
 
     private static float EstimateBpm(List<WavAnalyzer.BeatInfo> beats)
@@ -611,16 +665,7 @@ internal static class ChartGenerator
             return 120f;
 
         intervals.Sort();
-        float medianInterval = intervals[intervals.Count / 2];
-
-        // 비트 간격 → BPM (4/4 박자 기준, 1마디 = 4비트)
-        float bpm = 60f / medianInterval;
-
-        // 합리적인 범위로 조정
-        while (bpm < 80f) bpm *= 2f;
-        while (bpm > 200f) bpm /= 2f;
-
-        return MathF.Round(bpm);
+        return NormalizeBpm(60f / intervals[intervals.Count / 2]);
     }
 
     private static float NormalizeBpm(float bpm)
@@ -630,125 +675,138 @@ internal static class ChartGenerator
         return MathF.Round(bpm);
     }
 
-    private static string BuildBmsString(string songName, float bpm, List<(int measure, int lane, float offset)> notes, List<TempoSegment>? tempoMap = null)
+    private static string BuildBmsString(string songName, float bpm, List<(int measure, int lane, float offset)> notes, List<TempoSegment> tempoMap)
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"#TITLE {songName}");
         sb.AppendLine("#ARTIST AutoGenerated");
         sb.AppendLine($"#BPM {bpm:F0}");
+        AppendTempoDefinitions(sb, tempoMap);
+        AppendTempoEvents(sb, bpm, tempoMap);
 
-        var tempoSegments = (tempoMap is { Count: > 0 } ? tempoMap : [new TempoSegment(0f, bpm)])
-            .GroupBy(t => MathF.Round(t.Time, 3))
-            .Select(g => g.First())
-            .OrderBy(t => t.Time)
-            .ToList();
-
-        for (int i = 1; i < tempoSegments.Count && i <= 255; i++)
-            sb.AppendLine($"#BPM{i:X2} {tempoSegments[i].Bpm:F0}");
-
-        AppendTempoChangeEvents(sb, bpm, tempoSegments);
-
-        // 마디별, 레인별 그룹화
-        var grouped = notes
-            .GroupBy(n => n.measure)
-            .OrderBy(g => g.Key);
-
-        foreach (var measureGroup in grouped)
+        foreach (var laneGroup in notes.GroupBy(n => (n.measure, n.lane)).OrderBy(g => g.Key.measure).ThenBy(g => g.Key.lane))
         {
-            int measure = measureGroup.Key;
+            List<float> offsets = laneGroup.Select(n => n.offset).Distinct().OrderBy(o => o).ToList();
+            int resolution = DetermineResolution(offsets);
+            char[] cells = CreateCells(resolution);
 
-            // 레인별 분리
-            var byLane = measureGroup.GroupBy(n => n.lane).OrderBy(g => g.Key);
-
-            foreach (var laneGroup in byLane)
+            foreach (float offset in offsets)
             {
-                int lane = laneGroup.Key;
-                int channel = 11 + lane; // 11~14
-
-                var offsets = laneGroup.Select(n => n.offset).Distinct().OrderBy(o => o).ToList();
-
-                // 적절한 해상도 결정 (최대 48분할)
-                int resolution = DetermineResolution(offsets);
-                char[] cells = new char[resolution * 2];
-                Array.Fill(cells, '0');
-
-                foreach (float offset in offsets)
-                {
-                    int cellIndex = (int)MathF.Round(offset * resolution);
-                    cellIndex = Math.Clamp(cellIndex, 0, resolution - 1);
-                    cells[cellIndex * 2] = '0';
-                    cells[cellIndex * 2 + 1] = '1';
-                }
-
-                sb.AppendLine($"#{measure:D3}{channel:D2}:{new string(cells)}");
+                int cell = Math.Clamp((int)MathF.Round(offset * resolution), 0, resolution - 1);
+                cells[cell * 2 + 1] = '1';
             }
+
+            sb.AppendLine($"#{laneGroup.Key.measure:D3}{11 + laneGroup.Key.lane:D2}:{new string(cells)}");
         }
 
         return sb.ToString();
     }
 
-    private static void AppendTempoChangeEvents(System.Text.StringBuilder sb, float baseBpm, List<TempoSegment> tempoSegments)
+    private static string BuildBmsStringFromLaneNotes(string songName, float bpm, IReadOnlyList<LaneNote> notes, List<TempoSegment> tempoMap)
     {
-        if (tempoSegments.Count <= 1)
+        bpm = Math.Clamp(bpm, 40f, 300f);
+        float secondsPerMeasure = 240f / bpm;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"#TITLE {songName}");
+        sb.AppendLine("#ARTIST UserChart");
+        sb.AppendLine($"#BPM {bpm:F0}");
+        AppendTempoDefinitions(sb, tempoMap);
+        AppendTempoEvents(sb, bpm, tempoMap);
+
+        var cellsByLane = new Dictionary<(int measure, int lane), Dictionary<int, string>>();
+        foreach (LaneNote note in notes.OrderBy(n => n.Time).ThenBy(n => n.Lane))
+        {
+            float position = Math.Max(0f, note.Time / secondsPerMeasure);
+            int measure = Math.Clamp((int)MathF.Floor(position), 0, 999);
+            float offset = Math.Clamp(position - measure, 0f, 0.999f);
+            int resolution = 48;
+            int cell = Math.Clamp((int)MathF.Round(offset * resolution), 0, resolution - 1);
+            int lane = Math.Clamp(note.Lane, 0, 6);
+            string token = note.Type switch
+            {
+                NoteType.Long => "02",
+                NoteType.Slide => $"3{Math.Clamp(note.EndLane + 1, 1, 7):X1}",
+                _ => "01",
+            };
+
+            var key = (measure, lane);
+            if (!cellsByLane.TryGetValue(key, out Dictionary<int, string>? cellMap))
+            {
+                cellMap = [];
+                cellsByLane[key] = cellMap;
+            }
+
+            cellMap[cell] = token;
+        }
+
+        foreach (var laneGroup in cellsByLane.OrderBy(kv => kv.Key.measure).ThenBy(kv => kv.Key.lane))
+        {
+            int resolution = 48;
+            char[] cells = CreateCells(resolution);
+            foreach (var (cell, token) in laneGroup.Value)
+            {
+                cells[cell * 2] = token[0];
+                cells[cell * 2 + 1] = token[1];
+            }
+
+            sb.AppendLine($"#{laneGroup.Key.measure:D3}{11 + laneGroup.Key.lane:D2}:{new string(cells)}");
+        }
+
+        return sb.ToString();
+    }
+
+    private static void AppendTempoDefinitions(System.Text.StringBuilder sb, List<TempoSegment> tempoMap)
+    {
+        for (int i = 1; i < tempoMap.Count && i <= 255; i++)
+            sb.AppendLine($"#BPM{i:X2} {tempoMap[i].Bpm:F0}");
+    }
+
+    private static void AppendTempoEvents(System.Text.StringBuilder sb, float baseBpm, List<TempoSegment> tempoMap)
+    {
+        if (tempoMap.Count <= 1)
             return;
 
         float secondsPerMeasure = 240f / baseBpm;
-        var byMeasure = new Dictionary<int, List<(float offset, string token)>>();
-
-        for (int i = 1; i < tempoSegments.Count && i <= 255; i++)
-        {
-            float position = tempoSegments[i].Time / secondsPerMeasure;
-            int measure = Math.Max(0, (int)MathF.Floor(position));
-            float offset = Math.Clamp(position - measure, 0f, 0.999f);
-            string token = i.ToString("X2");
-
-            if (!byMeasure.TryGetValue(measure, out List<(float offset, string token)>? events))
+        var events = tempoMap
+            .Skip(1)
+            .Take(255)
+            .Select((t, i) =>
             {
-                events = [];
-                byMeasure[measure] = events;
-            }
+                float position = t.Time / secondsPerMeasure;
+                return (Measure: Math.Max(0, (int)MathF.Floor(position)), Offset: Math.Clamp(position % 1f, 0f, 0.999f), Token: (i + 1).ToString("X2"));
+            })
+            .GroupBy(e => e.Measure);
 
-            events.Add((offset, token));
-        }
-
-        foreach (var measureEvents in byMeasure.OrderBy(kvp => kvp.Key))
+        foreach (var group in events.OrderBy(g => g.Key))
         {
-            var offsets = measureEvents.Value.Select(e => e.offset).Distinct().OrderBy(o => o).ToList();
+            List<float> offsets = group.Select(e => e.Offset).Distinct().OrderBy(o => o).ToList();
             int resolution = DetermineResolution(offsets);
-            char[] cells = new char[resolution * 2];
-            Array.Fill(cells, '0');
+            char[] cells = CreateCells(resolution);
 
-            foreach (var tempoEvent in measureEvents.Value)
+            foreach (var tempoEvent in group)
             {
-                int cellIndex = (int)MathF.Round(tempoEvent.offset * resolution);
-                cellIndex = Math.Clamp(cellIndex, 0, resolution - 1);
-                cells[cellIndex * 2] = tempoEvent.token[0];
-                cells[cellIndex * 2 + 1] = tempoEvent.token[1];
+                int cell = Math.Clamp((int)MathF.Round(tempoEvent.Offset * resolution), 0, resolution - 1);
+                cells[cell * 2] = tempoEvent.Token[0];
+                cells[cell * 2 + 1] = tempoEvent.Token[1];
             }
 
-            sb.AppendLine($"#{measureEvents.Key:D3}08:{new string(cells)}");
+            sb.AppendLine($"#{group.Key:D3}08:{new string(cells)}");
         }
+    }
+
+    private static char[] CreateCells(int resolution)
+    {
+        char[] cells = new char[resolution * 2];
+        Array.Fill(cells, '0');
+        return cells;
     }
 
     private static int DetermineResolution(List<float> offsets)
     {
-        // 오프셋들을 잘 표현할 수 있는 최소 해상두
-        int[] candidates = [4, 8, 12, 16, 24];
-
-        foreach (int res in candidates)
+        foreach (int resolution in new[] { 4, 8, 12, 16, 24 })
         {
-            bool fits = true;
-            foreach (float o in offsets)
-            {
-                float quantized = MathF.Round(o * res) / res;
-                if (MathF.Abs(quantized - o) > 0.03f)
-                {
-                    fits = false;
-                    break;
-                }
-            }
-            if (fits)
-                return res;
+            if (offsets.All(o => MathF.Abs(MathF.Round(o * resolution) / resolution - o) <= 0.03f))
+                return resolution;
         }
 
         return 24;
@@ -761,9 +819,10 @@ internal static class ChartGenerator
         {
             if (char.IsLetterOrDigit(ch))
                 sb.Append(char.ToLowerInvariant(ch));
-            else if (ch == ' ' || ch == '-' || ch == '_')
+            else if (ch is ' ' or '-' or '_')
                 sb.Append('_');
         }
+
         return sb.ToString();
     }
 }

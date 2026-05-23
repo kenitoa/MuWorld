@@ -18,6 +18,13 @@ public class Note
     public float     TargetTime { get; set; }
     public float     Duration   { get; set; }
     public float     ResolvedTime { get; set; }
+    public float     HoldStartTime { get; set; }
+    public float     HoldProgress { get; set; }
+    public int       HoldTicksAwarded { get; set; }
+    public Judgment? StartJudgment { get; set; }
+    public Judgment? EndJudgment { get; set; }
+    public int       ChordSize { get; set; } = 1;
+    public string    ChordHint { get; set; } = string.Empty;
 
     public float EndTargetTime => TargetTime + Math.Max(0f, Duration);
 

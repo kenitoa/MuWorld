@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace RhythmGame;
@@ -44,6 +45,15 @@ internal static class AudioFileCatalog
     }
 
     public static string GetSongId(string path)
+    {
+        string slug = GetLegacySongId(path);
+        string normalizedPath = Path.GetFullPath(path).Replace('\\', '/').ToLowerInvariant();
+        byte[] hash = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(normalizedPath));
+        string suffix = Convert.ToHexString(hash, 0, 4).ToLowerInvariant();
+        return $"{slug}_{suffix}";
+    }
+
+    public static string GetLegacySongId(string path)
     {
         string name = Path.GetFileNameWithoutExtension(path);
         Span<char> buffer = stackalloc char[Math.Max(1, name.Length)];
@@ -99,11 +109,37 @@ internal static class AudioFileCatalog
                 metadata.DurationSeconds = Math.Max(0f, durationSeconds);
             if (TryGetFloat(root, "bpm", out float bpm))
                 metadata.Bpm = Math.Max(0f, bpm);
+            if (TryGetFloat(root, "previewStart", out float previewStart))
+                metadata.PreviewStart = Math.Max(0f, previewStart);
+            if (TryGetFloat(root, "previewEnd", out float previewEnd))
+                metadata.PreviewEnd = Math.Max(0f, previewEnd);
+            if (TryGetString(root, "genre", out string genre))
+                metadata.Genre = genre;
+            if (TryGetString(root, "source", out string source))
+                metadata.Source = source;
+            if (TryGetString(root, "bga", out string bga))
+                metadata.BgaPath = ResolveSidecarPath(audioPath, bga);
+            if (TryGetString(root, "cover", out string cover))
+                metadata.CoverPath = ResolveSidecarPath(audioPath, cover);
         }
-        catch
+        catch (Exception ex)
         {
-            // Invalid optional metadata should not block song discovery.
+            AppLogger.Error($"Invalid sidecar metadata for {Path.GetFileName(audioPath)}.", ex);
         }
+    }
+
+    private static string ResolveSidecarPath(string audioPath, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        string candidate = value.Trim();
+        if (Path.IsPathRooted(candidate))
+            return File.Exists(candidate) ? candidate : string.Empty;
+
+        string baseDir = Path.GetDirectoryName(audioPath) ?? AppContext.BaseDirectory;
+        string resolved = Path.GetFullPath(Path.Combine(baseDir, candidate));
+        return File.Exists(resolved) ? resolved : string.Empty;
     }
 
     private static bool TryGetString(JsonElement root, string propertyName, out string value)
@@ -156,8 +192,9 @@ internal static class AudioFileCatalog
                     return bpm;
             }
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Error($"Failed to read generated chart BPM for {title}.", ex);
             return 0f;
         }
 

@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
@@ -10,18 +11,25 @@ internal enum UiScreen
     MainMenu,
     Settings,
     SongSelect,
+    SongDetail,
     Achievement,
     AchievementDetail,
-    Analyze
+    Analyze,
+    InputCalibration,
+    KeyBindings,
+    ChartEditor
 }
 
 internal enum SettingsSlider
 {
     None,
     Bgm,
+    Preview,
     Sfx,
+    NoteSpeed,
     AudioOffset,
     LaneBrightness,
+    TextScale,
     SplashDuration
 }
 
@@ -31,10 +39,18 @@ internal enum DisplayMode
     Fullscreen
 }
 
+internal enum PlayMode
+{
+    Normal,
+    Practice
+}
+
 public sealed partial class GameForm : Form
 {
     private const float DesignWidth = 1152f;
     private const float DesignHeight = 768f;
+    private const float MainMenuDesignWidth = 1680f;
+    private const float MainMenuDesignHeight = 944f;
 
     // ── 엔진 & 타이머 ─────────────────────────────────────────────────────────
     private readonly GameEngine _engine = new();
@@ -46,8 +62,14 @@ public sealed partial class GameForm : Form
 
     private int _songSelectPageIndex;
     private int _songSelectSelectedIndex;
+    private int _songSortModeIndex;
+    private bool _songFavoritesOnly;
+    private int _hoverPauseAction = -1;
     private string _songSearchQuery = string.Empty;
     private bool _isSongSearchFocused;
+    private int _playModeIndex;
+    private float _grooveGauge = 70f;
+    private bool _gameFailedByGauge;
     private int _hoverAchievementCardIndex = -1;
     private bool _isAchievementBackHovered;
     private int _selectedAchievementCardIndex;
@@ -61,7 +83,6 @@ public sealed partial class GameForm : Form
     private AchievementDefinition? _activeAchievementToast;
     private DateTime _achievementToastStartTime;
     private DateTime _achievementToastUntil;
-    private bool _isMenuRestartHovered;
     private bool _isExitHovered;
     private UiScreen _screen = UiScreen.Splash;
     private DateTime _splashStartTime = DateTime.Now;
@@ -71,6 +92,10 @@ public sealed partial class GameForm : Form
     private readonly AudioManager _audio = new();
     private readonly AchievementProgressStore _achievementStore = new();
     private readonly UserSettingsStore _settingsStore = new();
+    private readonly InputLogStore _inputLogStore = new();
+    private readonly ReplayStore _replayStore = new();
+    private readonly RenderResourceCache _renderResources = new();
+    private readonly GdiResourceMonitor _gdiMonitor = new();
     private readonly Random _uiRandom = new();
     private bool _isCountdownActive;
     private DateTime _countdownStartTime;
@@ -82,6 +107,26 @@ public sealed partial class GameForm : Form
     private Rectangle _windowedBounds;
     private IReadOnlyList<LaneNote> _selectedChartNotes = [];
     private bool _isGamePaused;
+    private bool _isReplayPlayback;
+    private ReplayRecord? _activeReplay;
+    private int _replayEventIndex;
+    private string _previewSongKey = string.Empty;
+    private DateTime _previewStartedAt;
+    private ChartDifficultyInfo? _songPreviewDifficulty;
+    private IReadOnlyList<LaneNote> _songPreviewNotes = [];
+    private string _songPreviewStatus = string.Empty;
+    private List<LaneNote> _chartEditorNotes = [];
+    private readonly Stack<List<LaneNote>> _chartEditorUndo = new();
+    private int _chartEditorSelectedIndex = -1;
+    private int _hoverChartEditorAction = -1;
+    private NoteType _chartEditorInsertType = NoteType.Tap;
+    private float _chartEditorCursorTime;
+    private float _chartEditorBpm = 120f;
+    private float _chartEditorSongDuration = 60f;
+    private string _chartEditorSongTitle = string.Empty;
+    private string _chartEditorStatus = string.Empty;
+    private string _chartEditorPath = string.Empty;
+    private ChartDifficultyInfo? _chartEditorDifficulty;
 
     // Analyze screen state
     private string _analyzeSongTitle = string.Empty;
@@ -97,12 +142,29 @@ public sealed partial class GameForm : Form
     private int _analyzeBadCount;
     private int _analyzeMissCount;
     private int _analyzeMissStreak;
+    private int _analyzeEarlyCount;
+    private int _analyzeLateCount;
+    private int _analyzeAverageTimingMs;
+    private float _analyzeAccuracy;
+    private float _analyzeGrooveGauge;
+    private float _analyzeGaugeClearThreshold;
+    private string _analyzePlayMode = "NORMAL";
+    private ResultGrade _analyzeGrade = ResultGrade.F;
+    private ClearType _analyzeClearType = ClearType.Failed;
     private bool _isAnalyzeOkHovered;
+    private bool _analyzeIsNewRecord;
     private DateTime _chartCompleteTime;
     private bool _chartCompleteWaiting;
 
     private int _bgmVolume = 80;
+    private int _previewVolume = 45;
     private int _sfxVolume = 60;
+    private string _hitSoundSkin = "SYNTH";
+    private string _visualSkinName = VisualSkin.DefaultName;
+    private VisualSkin _visualSkin = VisualSkin.Load(VisualSkin.DefaultName);
+    private int _hitSoundSkinIndex;
+    private int _hitSoundPitch; // -1 low, 0 normal, 1 high
+    private bool _hitSoundMuted;
     private int _audioOffsetMs;
     private int _themeColorIndex;
     private int _laneBrightness = 70;
@@ -113,11 +175,24 @@ public sealed partial class GameForm : Form
     private bool _highContrastEnabled;
     private int _colorVisionMode;
     private bool _reducedMotionEnabled;
+    private int _textScalePercent = 100;
     private int _renderQualityMode = 1;
     private static readonly int[] FrameRateIntervals = [33, 16, 8, 7, 4]; // ms per frame
     private static readonly string[] FrameRateLabels = ["30", "60", "120", "144", "240"];
     private static readonly string[] RenderQualityLabels = ["FAST", "BAL", "HIGH"];
     private static readonly string[] ColorVisionLabels = ["OFF", "DEUT", "PROT", "TRIT"];
+    private static readonly string[] PlayModeLabels = ["NORMAL", "PRACTICE"];
+    private static readonly string[] HitSoundPitchLabels = ["LOW", "MID", "HIGH"];
+    private static readonly string[] SongSortLabels = ["TITLE", "ARTIST", "BPM", "LENGTH", "SCORE", "RECENT", "LEVEL", "FAV"];
+    private static readonly string[] PauseActionLabels = ["RESUME", "RETRY", "SONG SELECT", "SETTINGS LOCKED", "EXIT"];
+    private string _gameBgaPath = string.Empty;
+    private Bitmap? _gameBgaImage;
+    private string _comboMilestoneText = string.Empty;
+    private DateTime _comboMilestoneTime;
+    private int _lastComboMilestone;
+    private long _gameDrawFrameCount;
+    private long _lastGameDrawAllocatedBytes;
+    private DateTime _lastAllocationLogTime;
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmFlush();
@@ -130,9 +205,38 @@ public sealed partial class GameForm : Form
         Color.FromArgb(248, 151, 69),
     ];
 
+    private readonly record struct GaugeRule(
+        float Start,
+        float ClearThreshold,
+        float PerfectGain,
+        float GreatGain,
+        float BetterGain,
+        float GoodGain,
+        float BadLoss,
+        float MissLoss);
+
     // ── 판정 피드백 ───────────────────────────────────────────────────────────
     private string?  _feedback;
+    private string?  _feedbackTiming;
+    private Judgment? _feedbackJudgment;
     private DateTime _feedbackTime;
+
+    private readonly Stopwatch _calibrationStopwatch = new();
+    private readonly List<float> _calibrationOffsets = [];
+    private float _nextCalibrationBeatSeconds;
+    private float _lastCalibrationOffsetSeconds;
+    private int _calibrationBeatCount;
+    private bool _calibrationSaved;
+    private bool _isCalibrationBackHovered;
+    private bool _isCalibrationStartHovered;
+    private int _keyBindingModeIndex;
+    private int _keyBindingCaptureLane = -1;
+    private int _hoverKeyBindingLane = -1;
+    private int _hoverKeyBindingAction = -1;
+    private string _keyBindingStatus = "SELECT A LANE";
+    private readonly bool[] _keyTestPressed = new bool[7];
+    private int _mouseHeldLane = -1;
+    private readonly List<InputLogEvent> _inputLogEvents = [];
 
     // ── HUD 캐시 (불필요한 문자열 할당 방지) ────────────────────────────────────
     private string _cachedStatsText = string.Empty;
@@ -152,10 +256,11 @@ public sealed partial class GameForm : Form
     ];
 
     private int _laneModeIndex;
+    private readonly Keys[][] _laneKeyBindings = LaneModes.Select(mode => mode.Keys.ToArray()).ToArray();
     private LaneModeConfig ActiveLaneMode => LaneModes[_laneModeIndex];
     private int LaneCount => ActiveLaneMode.Count;
-    private Keys[] LaneKeys => ActiveLaneMode.Keys;
-    private string[] LaneLabels => ActiveLaneMode.Labels;
+    private Keys[] LaneKeys => _laneKeyBindings[_laneModeIndex];
+    private string[] LaneLabels => _laneKeyBindings[_laneModeIndex].Select(FormatKeyLabel).ToArray();
     private int LaneWidth => ClientSize.Width / LaneCount;
 
     private static readonly Color[] LaneColors =
@@ -258,23 +363,28 @@ public sealed partial class GameForm : Form
 
     // ── 생성자 ────────────────────────────────────────────────────────────────
     public GameForm()
+        : this(selfTestMode: false)
+    {
+    }
+
+    internal GameForm(bool selfTestMode)
     {
         Text            = "Rhythm Game";
         AccessibleName = "Rhythm Game";
         AccessibleRole = AccessibleRole.Application;
         BackColor       = Color.White;
         DoubleBuffered  = true;
-        FormBorderStyle = FormBorderStyle.Sizable;
-        MinimumSize     = new Size(960, 640);
-        MaximizeBox     = true;
+        FormBorderStyle = FormBorderStyle.None;
+        MinimumSize     = new Size(960, 540);
+        MaximizeBox     = false;
         StartPosition   = FormStartPosition.CenterScreen;
 
         // 현재 모니터 해상도의 75%로 초기 창 크기 설정 (DesignWidth:DesignHeight 비율 유지)
         var screen = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
-        float fitScale = Math.Min(screen.Width * 0.75f / DesignWidth, screen.Height * 0.75f / DesignHeight);
-        int initW = (int)(DesignWidth * fitScale);
-        int initH = (int)(DesignHeight * fitScale);
-        ClientSize = new Size(Math.Max(initW, 960), Math.Max(initH, 640));
+        float fitScale = Math.Min(screen.Width * 0.75f / MainMenuDesignWidth, screen.Height * 0.75f / MainMenuDesignHeight);
+        int initW = (int)(MainMenuDesignWidth * fitScale);
+        int initH = (int)(MainMenuDesignHeight * fitScale);
+        ClientSize = new Size(Math.Max(initW, 960), Math.Max(initH, 540));
         KeyPreview      = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
 
@@ -291,12 +401,13 @@ public sealed partial class GameForm : Form
         _playerProgress = _achievementStore.Load();
 
         // WAV 파일 분석 및 채보 자동 생성
-        ChartGenerator.GenerateAllCharts();
-
-        _audio.PlayMainScreenBgm();
-
-        _splashTimer.Tick += OnSplashTick;
-        _splashTimer.Start();
+        if (!selfTestMode)
+        {
+            ChartGenerator.BeginGenerateAllChartsAsync();
+            _audio.PlayMainScreenBgm();
+            _splashTimer.Tick += OnSplashTick;
+            _splashTimer.Start();
+        }
     }
 
     private void OnSplashTick(object? sender, EventArgs e)
@@ -319,6 +430,38 @@ public sealed partial class GameForm : Form
             _audio.PlayInGameBgm(song.FilePath);
     }
 
+    private void LoadBgaForSong(SongEntry? song)
+    {
+        string path = song?.BgaPath ?? string.Empty;
+        if (string.Equals(_gameBgaPath, path, StringComparison.Ordinal))
+            return;
+
+        _gameBgaImage?.Dispose();
+        _gameBgaImage = null;
+        _gameBgaPath = path;
+
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return;
+
+        string extension = Path.GetExtension(path);
+        if (!string.Equals(extension, ".png", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(extension, ".jpeg", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(extension, ".bmp", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        try
+        {
+            using var source = new Bitmap(path);
+            _gameBgaImage = new Bitmap(source);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Failed to load BGA image {path}.", ex);
+            _gameBgaImage = null;
+        }
+    }
+
     // ── 게임 루프 ─────────────────────────────────────────────────────────────
     private void OnTick(object? sender, EventArgs e)
     {
@@ -328,6 +471,13 @@ public sealed partial class GameForm : Form
         float dt = (float)(elapsedMs / 1000.0);
         dt = Math.Min(dt, 0.05f); // cap at 50ms to avoid jumps
         bool toastVisible = UpdateAchievementToast(now);
+
+        if (_screen == UiScreen.InputCalibration)
+        {
+            UpdateInputCalibration();
+            Invalidate();
+            return;
+        }
 
         if (_isCountdownActive)
         {
@@ -362,7 +512,36 @@ public sealed partial class GameForm : Form
             return;
         }
 
-        _engine.Update(dt);
+        _engine.Update(dt, _audio.GetInGameBgmPositionSeconds());
+        ProcessReplayPlayback();
+        ConsumeEngineGaugeEvents();
+        UpdateComboMilestone();
+        _gdiMonitor.Sample(_isReplayPlayback ? "replay" : "game");
+
+        if (!IsPracticeMode && _gameFailedByGauge)
+        {
+            EndGame();
+            return;
+        }
+
+        if (!_engine.IsChartComplete && _audio.IsInGameBgmPlaying && _audio.IsInGameBgmFinished())
+        {
+            if (!_chartCompleteWaiting)
+            {
+                _chartCompleteWaiting = true;
+                _chartCompleteTime = DateTime.Now;
+            }
+            else if ((DateTime.Now - _chartCompleteTime).TotalSeconds >= 1.2)
+            {
+                _chartCompleteWaiting = false;
+                EndGame();
+                return;
+            }
+        }
+        else if (!_engine.IsChartComplete)
+        {
+            _chartCompleteWaiting = false;
+        }
 
         if (_engine.IsChartComplete)
         {
@@ -371,7 +550,7 @@ public sealed partial class GameForm : Form
                 _chartCompleteWaiting = true;
                 _chartCompleteTime = DateTime.Now;
             }
-            else if ((DateTime.Now - _chartCompleteTime).TotalSeconds >= 3.0)
+            else if (ShouldEndAfterChartComplete())
             {
                 _chartCompleteWaiting = false;
                 EndGame();
@@ -386,6 +565,8 @@ public sealed partial class GameForm : Form
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        if (HandleAccessibilityKeyDown(e))
+            return;
 
         if (!_engine.IsRunning)
         {
@@ -403,6 +584,49 @@ public sealed partial class GameForm : Form
                     CancelCountdown();
                     Invalidate();
                 }
+                return;
+            }
+
+            if (_screen == UiScreen.InputCalibration)
+            {
+                e.SuppressKeyPress = true;
+                if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.Back)
+                {
+                    StopInputCalibration(save: false);
+                    _screen = UiScreen.Settings;
+                    Invalidate();
+                    return;
+                }
+
+                if (e.KeyCode == Keys.Enter)
+                {
+                    StartInputCalibration();
+                    Invalidate();
+                    return;
+                }
+
+                if (e.KeyCode == Keys.Space || LaneKeys.Contains(e.KeyCode))
+                {
+                    CaptureInputCalibrationHit();
+                    Invalidate();
+                }
+
+                return;
+            }
+
+            if (_screen == UiScreen.KeyBindings)
+            {
+                e.SuppressKeyPress = true;
+                HandleKeyBindingsKeyDown(e.KeyCode);
+                Invalidate();
+                return;
+            }
+
+            if (_screen == UiScreen.ChartEditor)
+            {
+                e.SuppressKeyPress = true;
+                HandleChartEditorKeyDown(e.KeyCode);
+                Invalidate();
                 return;
             }
 
@@ -439,12 +663,35 @@ public sealed partial class GameForm : Form
                 return;
             }
 
+            if (_screen == UiScreen.SongDetail)
+            {
+                if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.Back)
+                {
+                    e.SuppressKeyPress = true;
+                    _screen = UiScreen.SongSelect;
+                    Invalidate();
+                    return;
+                }
+
+                if (e.KeyCode == Keys.F)
+                {
+                    e.SuppressKeyPress = true;
+                    ToggleSelectedSongFavorite();
+                    Invalidate();
+                    return;
+                }
+
+                return;
+            }
+
             if (_screen == UiScreen.SongSelect)
             {
                 if (e.KeyCode == Keys.Escape)
                 {
                     e.SuppressKeyPress = true;
                     _screen = UiScreen.MainMenu;
+                    _audio.StopSongPreview();
+                    _audio.PlayMainScreenBgm();
                     Invalidate();
                     return;
                 }
@@ -479,7 +726,54 @@ public sealed partial class GameForm : Form
                     return;
                 }
 
+                if (e.KeyCode == Keys.D && !_isSongSearchFocused)
+                {
+                    e.SuppressKeyPress = true;
+                    OpenSelectedSongDetail();
+                    return;
+                }
+
+                if (e.KeyCode == Keys.F && !_isSongSearchFocused)
+                {
+                    e.SuppressKeyPress = true;
+                    ToggleSelectedSongFavorite();
+                    Invalidate();
+                    return;
+                }
+
+                if (e.KeyCode == Keys.L && !_isSongSearchFocused)
+                {
+                    e.SuppressKeyPress = true;
+                    StartReplayForSelectedSong();
+                    return;
+                }
+
+                if (e.KeyCode == Keys.R && !_isSongSearchFocused)
+                {
+                    e.SuppressKeyPress = true;
+                    RescanSongs();
+                    return;
+                }
+
                 return;
+            }
+
+            if (_screen == UiScreen.MainMenu)
+            {
+                if (e.KeyCode == Keys.Escape)
+                {
+                    e.SuppressKeyPress = true;
+                    Close();
+                    return;
+                }
+
+                if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter)
+                {
+                    e.SuppressKeyPress = true;
+                    _screen = UiScreen.SongSelect;
+                    Invalidate();
+                    return;
+                }
             }
 
             if (e.KeyCode == Keys.D5 || e.KeyCode == Keys.NumPad5) { e.SuppressKeyPress = true; CycleLaneModeForward(); Invalidate(); return; }
@@ -519,6 +813,14 @@ public sealed partial class GameForm : Form
         if (e.KeyCode == Keys.D3) { e.SuppressKeyPress = true; CycleGameModeForward(); Invalidate(); return; }
         if (e.KeyCode == Keys.D4) { e.SuppressKeyPress = true; CycleGameModeBackward(); Invalidate(); return; }
 
+        int boundLane = GetLaneForKey(e.KeyCode);
+        if (boundLane >= 0)
+        {
+            e.SuppressKeyPress = true;
+            BeginLaneInput(boundLane, FormatKeyLabel(e.KeyCode), "keyboard");
+            return;
+        }
+
         for (int i = 0; i < LaneKeys.Length; i++)
         {
             if (e.KeyCode != LaneKeys[i]) continue;
@@ -530,9 +832,11 @@ public sealed partial class GameForm : Form
             if (hit is not null)
             {
                 _feedback = hit.Value.Label;
+                _feedbackTiming = hit.Value.TimingLabel;
+                _feedbackJudgment = hit.Value.Judgment;
                 _feedbackTime = DateTime.Now;
 
-                _audio.PlayHit(_sfxVolume, hit.Value.Judgment, _audio.IsInGameBgmPlaying);
+                _audio.PlayHit(_sfxVolume, hit.Value.Judgment);
             }
             // Invalidate()는 타이머(~8ms)가 이미 매 프레임 호출하므로 생략
             break;
@@ -542,6 +846,22 @@ public sealed partial class GameForm : Form
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
+
+        if (!_engine.IsRunning && _screen == UiScreen.KeyBindings)
+        {
+            HandleKeyBindingsKeyUp(e.KeyCode);
+            Invalidate();
+            return;
+        }
+
+        int boundLane = GetLaneForKey(e.KeyCode);
+        if (boundLane >= 0)
+        {
+            EndLaneInput(boundLane, FormatKeyLabel(e.KeyCode), "keyboard");
+            if (!_engine.IsRunning) Invalidate();
+            return;
+        }
+
         for (int i = 0; i < LaneKeys.Length; i++)
         {
             if (e.KeyCode == LaneKeys[i])
@@ -570,14 +890,33 @@ public sealed partial class GameForm : Form
         }
     }
 
-    private void BeginGame()
+    private void BeginGame(bool replayPlayback = false)
     {
         _feedback = null;
+        _feedbackTiming = null;
+        _feedbackJudgment = null;
+        _comboMilestoneText = string.Empty;
+        _lastComboMilestone = 0;
+        _inputLogEvents.Clear();
+        _isReplayPlayback = replayPlayback;
+        if (!replayPlayback)
+        {
+            _activeReplay = null;
+            _replayEventIndex = 0;
+        }
         _isGamePaused = false;
+        _gameFailedByGauge = false;
+        _grooveGauge = GetGaugeRule(_songSelectDifficultyIndex).Start;
+        _gameDrawFrameCount = 0;
+        _lastGameDrawAllocatedBytes = 0;
+        _lastAllocationLogTime = DateTime.Now;
+        _gdiMonitor.Start(replayPlayback ? "replay" : "game");
         Array.Clear(_lanePressed);
+        _mouseHeldLane = -1;
         ApplySettingsToRuntime();
         _audio.StopAllSounds();
         SongEntry? selectedSong = _screen == UiScreen.SongSelect ? GetSelectedSong() : null;
+        LoadBgaForSong(selectedSong);
         _selectedChartNotes = NoteLane.LoadNotes(selectedSong?.Title, selectedSong?.Artist, _songSelectDifficultyIndex, LaneCount);
 
         // 시작 후 3초간 노트 없이 준비 시간 확보
@@ -594,8 +933,57 @@ public sealed partial class GameForm : Form
         _timer.Start();
     }
 
+    private void StartReplayForSelectedSong()
+    {
+        SongEntry? song = GetSelectedSong();
+        if (song is null)
+            return;
+
+        ReplayRecord? replay = _replayStore.LoadLatest(song.SongId, _songSelectDifficultyIndex, LaneCount);
+        if (replay is null || replay.Events.Count == 0)
+        {
+            _feedback = "NO REPLAY";
+            _feedbackTime = DateTime.Now;
+            Invalidate();
+            return;
+        }
+
+        _activeReplay = replay;
+        _replayEventIndex = 0;
+        BeginGame(replayPlayback: true);
+    }
+
+    private bool ShouldEndAfterChartComplete()
+    {
+        if (_audio.IsInGameBgmFinished())
+            return true;
+
+        float waitSeconds = _audio.GetInGameBgmDurationSeconds().HasValue ? 1.2f : 1.8f;
+        return (DateTime.Now - _chartCompleteTime).TotalSeconds >= waitSeconds;
+    }
+
+    private void ProcessReplayPlayback()
+    {
+        if (!_isReplayPlayback || _activeReplay is null)
+            return;
+
+        List<InputLogEvent> events = _activeReplay.Events;
+        while (_replayEventIndex < events.Count && events[_replayEventIndex].Time <= _engine.CurrentChartTime)
+        {
+            InputLogEvent input = events[_replayEventIndex++];
+            if (input.Lane < 0 || input.Lane >= LaneCount)
+                continue;
+
+            if (input.KeyDown)
+                BeginLaneInput(input.Lane, input.Input, "replay");
+            else
+                EndLaneInput(input.Lane, input.Input, "replay");
+        }
+    }
+
     private void EndGame()
     {
+        _gdiMonitor.Stop(_isReplayPlayback ? "replay" : "game");
         // Capture results before stopping engine
         _analyzeScore = _engine.Score.Score;
         _analyzeMaxCombo = _engine.Score.MaxCombo;
@@ -606,23 +994,46 @@ public sealed partial class GameForm : Form
         _analyzeBadCount = _engine.Score.BadCount;
         _analyzeMissCount = _engine.Score.MissCount;
         _analyzeMissStreak = _engine.Score.MaxMissStreak;
+        _analyzeEarlyCount = _engine.Score.EarlyCount;
+        _analyzeLateCount = _engine.Score.LateCount;
+        _analyzeAverageTimingMs = (int)MathF.Round(_engine.Score.AverageTimingOffsetSeconds * 1000f);
+        _analyzeAccuracy = _engine.Score.TotalJudgedNotes > 0 ? _engine.Score.Accuracy : 0f;
+        _analyzeGrooveGauge = _grooveGauge;
+        _analyzeGaugeClearThreshold = GetGaugeRule(_songSelectDifficultyIndex).ClearThreshold;
+        _analyzePlayMode = PlayModeLabels[Math.Clamp(_playModeIndex, 0, PlayModeLabels.Length - 1)];
+        _analyzeClearType = GetSessionClearType();
+        _analyzeGrade = ScoreManager.CalculateGrade(_analyzeAccuracy, _engine.Score.MissCount, _engine.Score.MaxCombo, _analyzeClearType);
 
         // Store song info
         SongEntry? song = GetSelectedSong();
         _analyzeSongTitle = song?.Title ?? "Unknown";
-        _analyzeSongArtist = song is null ? "Unknown" : BuildSongPreviewMetadata(song);
+        _analyzeSongArtist = song is null ? "Unknown" : BuildSongMetadata(song, includeBest: true);
         _analyzeSongArtworkStyle = song?.ArtworkStyle ?? 0;
         int previousSongHighScore = song is null
             ? _playerProgress.HighestScore
             : SongData.TryGetScore(song.SongId)?.HighestScore ?? 0;
         _analyzeHighestScore = previousSongHighScore;
+        _analyzeIsNewRecord = _analyzeScore > previousSongHighScore;
 
-        SongScoreRecord? songScore = RecordSongScore(song);
-        RecordAchievementProgress();
+        SongScoreRecord? songScore = null;
+        if (!_isReplayPlayback)
+        {
+            string replayPath = SaveReplayRecord(song);
+            songScore = RecordSongScore(song, replayPath);
+            RecordAchievementProgress(song);
+            _inputLogStore.Save(_inputLogEvents);
+        }
         _engine.Stop();
         _isCountdownActive = false;
         _isGamePaused = false;
+        _isReplayPlayback = false;
+        _activeReplay = null;
+        _replayEventIndex = 0;
+        _gameBgaImage?.Dispose();
+        _gameBgaImage = null;
+        _gameBgaPath = string.Empty;
         Array.Clear(_lanePressed);
+        _mouseHeldLane = -1;
 
         // Update highest score after recording
         _analyzeHighestScore = songScore?.HighestScore ?? Math.Max(_analyzeHighestScore, _analyzeScore);
@@ -637,21 +1048,95 @@ public sealed partial class GameForm : Form
         Invalidate();
     }
 
-    private SongScoreRecord? RecordSongScore(SongEntry? song)
+    private string SaveReplayRecord(SongEntry? song)
+    {
+        if (_isReplayPlayback || song is null || _inputLogEvents.Count == 0)
+            return string.Empty;
+
+        string difficulty = GetDifficultyLabel(_songSelectDifficultyIndex);
+        return _replayStore.Save(new ReplayRecord
+        {
+            ChartVersion = BuildChartVersion(song),
+            SongId = song.SongId,
+            SongTitle = song.Title,
+            Artist = song.Artist,
+            DifficultyIndex = _songSelectDifficultyIndex,
+            Difficulty = difficulty,
+            LaneCount = LaneCount,
+            AudioOffsetMs = _audioOffsetMs,
+            SpeedMultiplier = _speedMultiplier,
+            PlayedUtc = DateTime.UtcNow.ToString("O"),
+            Score = _analyzeScore,
+            Accuracy = _analyzeAccuracy,
+            Grade = ScoreManager.FormatGrade(_analyzeGrade),
+            ClearType = ScoreManager.FormatClearType(_analyzeClearType),
+            Events = _inputLogEvents.ToList(),
+        });
+    }
+
+    private string BuildChartVersion(SongEntry song)
+    {
+        unchecked
+        {
+            int hash = 17;
+            hash = AddStableHash(hash, song.SongId);
+            hash = hash * 31 + _songSelectDifficultyIndex;
+            hash = hash * 31 + LaneCount;
+            foreach (LaneNote note in _selectedChartNotes)
+            {
+                hash = hash * 31 + note.Lane;
+                hash = hash * 31 + note.EndLane;
+                hash = hash * 31 + (int)note.Type;
+                hash = AddStableHash(hash, note.Time);
+                hash = AddStableHash(hash, note.Duration);
+            }
+
+            return $"{song.SongId}:{_songSelectDifficultyIndex}:{LaneCount}K:{hash:x8}";
+        }
+    }
+
+    private static int AddStableHash(int hash, string value)
+    {
+        unchecked
+        {
+            foreach (char ch in value)
+                hash = hash * 31 + ch;
+            return hash;
+        }
+    }
+
+    private static int AddStableHash(int hash, float value)
+    {
+        return AddStableHash(hash, value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private SongScoreRecord? RecordSongScore(SongEntry? song, string replayPath)
     {
         if (song is null)
             return null;
 
-        int judged = _analyzePerfectCount + _analyzeGreatCount + _analyzeBetterCount + _analyzeGoodCount + _analyzeBadCount + _analyzeMissCount;
-        int hits = _analyzePerfectCount + _analyzeGreatCount + _analyzeBetterCount + _analyzeGoodCount + _analyzeBadCount;
-        float accuracy = judged > 0 ? hits * 100f / judged : 0f;
-
-        SongScoreRecord record = SongData.RecordScore(song.ToMetadata(), _songSelectDifficultyIndex, _analyzeScore, _analyzeMaxCombo, accuracy);
+        SongScoreRecord record = SongData.RecordScore(
+            song.ToMetadata(),
+            _songSelectDifficultyIndex,
+            _analyzeScore,
+            _analyzeMaxCombo,
+            _analyzeAccuracy,
+            _analyzeGrade,
+            _analyzeClearType,
+            _analyzeMissStreak,
+            LaneCount,
+            _analyzePerfectCount,
+            _analyzeGreatCount,
+            _analyzeBetterCount,
+            _analyzeGoodCount,
+            _analyzeBadCount,
+            _analyzeMissCount,
+            replayPath);
         InvalidateSongCache();
         return record;
     }
 
-    private void RecordAchievementProgress()
+    private void RecordAchievementProgress(SongEntry? song)
     {
         GameSessionSummary session = new(
             _engine.Score.Score,
@@ -661,7 +1146,15 @@ public sealed partial class GameForm : Form
             _engine.Score.BetterCount,
             _engine.Score.GoodCount,
             _engine.Score.BadCount,
-            _engine.Score.MissCount);
+            _engine.Score.MissCount,
+            _engine.Score.MaxMissStreak,
+            _analyzeAccuracy,
+            _analyzeGrade,
+            _analyzeClearType,
+            song?.SongId ?? string.Empty,
+            _songSelectDifficultyIndex,
+            LaneCount,
+            song?.Bpm ?? 0f);
 
         if (!session.HasPlayableData)
             return;
@@ -671,11 +1164,120 @@ public sealed partial class GameForm : Form
         EnqueueAchievementToasts(unlocked);
     }
 
+    private GaugeRule GetGaugeRule(int difficultyIndex)
+    {
+        return difficultyIndex switch
+        {
+            0 => new GaugeRule(78f, 30f, 2.2f, 1.8f, 1.2f, 0.7f, 4.0f, 8.0f),
+            2 => new GaugeRule(64f, 70f, 1.3f, 1.0f, 0.7f, 0.2f, 8.0f, 16.0f),
+            _ => new GaugeRule(70f, 50f, 1.8f, 1.4f, 1.0f, 0.4f, 6.0f, 12.0f),
+        };
+    }
+
+    private bool IsPracticeMode => _playModeIndex == (int)PlayMode.Practice;
+
+    private bool ShouldFailByGauge()
+    {
+        return !IsPracticeMode && (_gameFailedByGauge || _grooveGauge < GetGaugeRule(_songSelectDifficultyIndex).ClearThreshold);
+    }
+
+    private ClearType GetSessionClearType()
+    {
+        ClearType baseClearType = _engine.Score.ClearType;
+        if (IsPracticeMode)
+            return baseClearType == ClearType.Failed && _engine.Score.TotalJudgedNotes > 0
+                ? ClearType.Clear
+                : baseClearType;
+
+        return ShouldFailByGauge() ? ClearType.Failed : baseClearType;
+    }
+
+    private bool IsGaugeDanger()
+    {
+        if (IsPracticeMode || !_engine.IsRunning)
+            return false;
+
+        GaugeRule rule = GetGaugeRule(_songSelectDifficultyIndex);
+        return _grooveGauge <= Math.Max(22f, rule.ClearThreshold + 10f);
+    }
+
+    private void ApplyGaugeForHitResult(GameEngine.HitResult hit)
+    {
+        if (hit.Label.StartsWith("MISS", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        ApplyGaugeJudgment(hit.Judgment);
+    }
+
+    private void ConsumeEngineGaugeEvents()
+    {
+        foreach (Judgment judgment in _engine.ConsumePendingAutoJudgments())
+            ApplyGaugeJudgment(judgment);
+
+        int misses = _engine.ConsumePendingMisses();
+        for (int i = 0; i < misses; i++)
+            ApplyGaugeMiss();
+    }
+
+    private void UpdateComboMilestone()
+    {
+        int combo = _engine.Score.Combo;
+        if (combo <= 0)
+        {
+            _lastComboMilestone = 0;
+            return;
+        }
+
+        int milestone = combo switch
+        {
+            >= 200 when combo % 100 == 0 => combo,
+            100 => 100,
+            50 => 50,
+            _ => 0,
+        };
+
+        if (milestone <= 0 || milestone == _lastComboMilestone)
+            return;
+
+        _lastComboMilestone = milestone;
+        _comboMilestoneText = $"{milestone} COMBO";
+        _comboMilestoneTime = DateTime.Now;
+    }
+
+    private void ApplyGaugeJudgment(Judgment judgment)
+    {
+        GaugeRule rule = GetGaugeRule(_songSelectDifficultyIndex);
+        float delta = judgment switch
+        {
+            Judgment.Perfect => rule.PerfectGain,
+            Judgment.Great => rule.GreatGain,
+            Judgment.Better => rule.BetterGain,
+            Judgment.Good => rule.GoodGain,
+            Judgment.Bad => -rule.BadLoss,
+            _ => 0f,
+        };
+
+        ApplyGaugeDelta(delta);
+    }
+
+    private void ApplyGaugeMiss()
+    {
+        ApplyGaugeDelta(-GetGaugeRule(_songSelectDifficultyIndex).MissLoss);
+    }
+
+    private void ApplyGaugeDelta(float delta)
+    {
+        _grooveGauge = Math.Clamp(_grooveGauge + delta, 0f, 100f);
+        if (!IsPracticeMode && _grooveGauge <= 0f)
+            _gameFailedByGauge = true;
+    }
+
     private void CancelCountdown()
     {
         _isCountdownActive = false;
         _isGamePaused = false;
         Array.Clear(_lanePressed);
+        _mouseHeldLane = -1;
         _audio.StopAllSounds();
         _audio.PlayMainScreenBgm();
         _timer.Stop();
@@ -688,7 +1290,9 @@ public sealed partial class GameForm : Form
             return;
 
         _isGamePaused = true;
+        _frameStopwatch.Restart();
         Array.Clear(_lanePressed);
+        _mouseHeldLane = -1;
         for (int i = 0; i < 7; i++)
             _engine.SetLaneHeld(i, false);
         _audio.PauseInGameBgm();
@@ -756,10 +1360,15 @@ public sealed partial class GameForm : Form
         g.TranslateTransform(_layoutOffsetX, _layoutOffsetY);
         if (_screen == UiScreen.Settings) DrawSettings(g);
         else if (_screen == UiScreen.SongSelect) DrawSongSelect(g);
+        else if (_screen == UiScreen.SongDetail) DrawSongDetail(g);
         else if (_screen == UiScreen.AchievementDetail) DrawAchievementDetail(g);
         else if (_screen == UiScreen.Achievement) DrawAchievement(g);
         else if (_screen == UiScreen.Analyze) DrawAnalyze(g);
+        else if (_screen == UiScreen.InputCalibration) DrawInputCalibration(g);
+        else if (_screen == UiScreen.KeyBindings) DrawKeyBindings(g);
+        else if (_screen == UiScreen.ChartEditor) DrawChartEditor(g);
         else if (_screen == UiScreen.MainMenu) DrawMenu(g);
+        DrawKeyboardFocus(g, clientCoordinates: false);
 
         if (_vsyncEnabled)
         {
@@ -807,9 +1416,13 @@ public sealed partial class GameForm : Form
         AccessibleDescription = screenName switch
         {
             "Splash" => "Splash screen. Press any key or click to start.",
-            "Settings" => "Settings screen. Adjust sound, display, accessibility, and rendering options.",
-            "SongSelect" => "Song selection screen. Select a song and difficulty, then start the game.",
-            "Analyze" => "Results screen. Review score, combo, judgments, and miss streak.",
+            "Settings" => "Settings screen. Press Tab to move between controls, Enter or Space to activate, Left or Right to adjust sliders and segmented controls.",
+            "InputCalibration" => "Input latency calibration screen. Press keys to match the metronome.",
+            "KeyBindings" => "Key binding screen. Assign lane keys and test simultaneous input.",
+            "SongSelect" => "Song selection screen. Press Tab to move through search, songs, difficulty, controls, and play.",
+            "Analyze" => "Results screen. Review score, combo, judgments, miss streak, and press OK to return.",
+            "Achievement" => "Achievements screen. Press Tab to choose a category or go back.",
+            "AchievementDetail" => "Achievement detail screen. Press Tab to choose tabs, pages, or back.",
             "In Game" => "Gameplay screen. Use lane keys to hit notes. Press Escape or P to pause.",
             _ => "Main menu. Open settings, song select, or achievements.",
         };
@@ -867,7 +1480,7 @@ public sealed partial class GameForm : Form
         float fadeIn = Math.Clamp(elapsed / 0.28f, 0f, 1f);
         float fadeOut = (float)Math.Clamp((_achievementToastUntil - DateTime.Now).TotalSeconds / 0.35, 0d, 1d);
         float opacity = Math.Min(fadeIn, fadeOut <= 0f ? 1f : fadeOut);
-        float slide = (1f - fadeIn) * 18f;
+        float slide = _reducedMotionEnabled ? 0f : (1f - fadeIn) * 18f;
 
         int width = (int)Math.Round(ScaleX(292f));
         int height = (int)Math.Round(ScaleY(86f));
@@ -920,8 +1533,8 @@ public sealed partial class GameForm : Form
         // 배경: 밝은 흰색 그라데이션
         using (var bgBrush = new LinearGradientBrush(
             new Point(0, 0), new Point(0, h),
-            Color.FromArgb(255, 255, 255),
-            Color.FromArgb(240, 242, 252)))
+            Color.FromArgb(6, 10, 20),
+            Color.FromArgb(16, 24, 42)))
         {
             g.FillRectangle(bgBrush, 0, 0, w, h);
         }
@@ -947,7 +1560,7 @@ public sealed partial class GameForm : Form
         float titleX = w / 2f;
         float titleY1 = h * 0.33f;
         float titleY2 = titleY1 + sz1.Height * 0.85f;
-        using var titleBrush = new SolidBrush(Color.FromArgb(52, 120, 210));
+        using var titleBrush = new SolidBrush(GetAccentColor());
         g.DrawString(title1, titleFont, titleBrush, titleX - sz1.Width / 2f, titleY1);
         g.DrawString(title2, titleFont, titleBrush, titleX - sz2.Width / 2f, titleY2);
 
@@ -955,7 +1568,7 @@ public sealed partial class GameForm : Form
         float blink = _reducedMotionEnabled ? 0.8f : (float)(Math.Sin(elapsed * 3.0) * 0.5 + 0.5);
         int alpha = (int)(80 + 175 * blink);
         using var hintFont = new Font("Segoe UI", Math.Max(10f, h * 0.018f), FontStyle.Regular);
-        using var hintBrush = new SolidBrush(Color.FromArgb(alpha, 100, 130, 170));
+        using var hintBrush = new SolidBrush(Color.FromArgb(alpha, 170, 190, 225));
         string hint = "Press any key or click to start";
         var hintSz = g.MeasureString(hint, hintFont);
         g.DrawString(hint, hintFont, hintBrush, w / 2f - hintSz.Width / 2f, h * 0.82f);
@@ -1002,11 +1615,11 @@ public sealed partial class GameForm : Form
         blend.Positions = [0f, 0.3f, 0.5f, 0.7f, 1f];
         blend.Colors =
         [
-            Color.FromArgb(0,  255, 255, 255),
-            Color.FromArgb(30, 200, 210, 250),
-            Color.FromArgb(50, 220, 200, 255),
-            Color.FromArgb(30, 200, 210, 250),
-            Color.FromArgb(0,  255, 255, 255),
+            Color.FromArgb(0,  0, 180, 255),
+            Color.FromArgb(28, 0, 220, 255),
+            Color.FromArgb(48, 255, 230, 90),
+            Color.FromArgb(28, 0, 220, 255),
+            Color.FromArgb(0,  0, 180, 255),
         ];
         glowBrush.InterpolationColors = blend;
         g.FillRectangle(glowBrush, 0, centerY - 80 * scale, w, 160 * scale);
@@ -1048,40 +1661,54 @@ public sealed partial class GameForm : Form
     // ── 메뉴 화면 ─────────────────────────────────────────────────────────────
     private void DrawMenu(Graphics g)
     {
-        int centerX = (int)ScaleX(DesignWidth / 2f);
-        Color accent = GetAccentColor();
+        Rectangle layoutRect = MenuRect(0f, 0f, MainMenuDesignWidth, MainMenuDesignHeight);
+        DrawMainMenuBackground(g, layoutRect);
 
-        using var titleFont = new Font("Segoe UI", Math.Max(12f, ScaleY(31f)), FontStyle.Bold);
-        using var labelFont = new Font("Segoe UI", Math.Max(9f, ScaleY(15f)), FontStyle.Regular);
-        using var menuButtonFont = new Font("Segoe UI", Math.Max(10f, ScaleY(24f)), FontStyle.Bold);
+        Color accent = UseHighContrast ? Color.White : Color.FromArgb(105, 166, 255);
+        using var brandFont = new Font("Segoe UI", Math.Max(8f, MenuS(15f)), FontStyle.Regular);
+        using var titleFont = new Font("Segoe UI Light", Math.Max(40f, MenuS(76f)), FontStyle.Regular);
+        using var tagFont = new Font("Segoe UI", Math.Max(8.5f, MenuS(17f)), FontStyle.Regular);
+        using var menuFont = new Font("Segoe UI", Math.Max(13f, MenuS(26f)), FontStyle.Regular);
+        using var smallFont = new Font("Segoe UI", Math.Max(7.5f, MenuS(13f)), FontStyle.Regular);
+        using var textBrush = new SolidBrush(Color.FromArgb(236, 242, 255));
+        using var dimBrush = new SolidBrush(Color.FromArgb(182, 190, 210));
+        using var blueBrush = new SolidBrush(accent);
 
-        var titleBrush = new SolidBrush(accent);
-        string title = "RHYTHM GAME";
-        var titleSize = g.MeasureString(title, titleFont);
-        float noteGap = ScaleX(12f);
-        float noteWidth = ScaleX(28f);
-        float groupWidth = titleSize.Width + noteGap + noteWidth;
-        float titleX = centerX - groupWidth / 2f;
-        float titleY = ScaleY(58f);
-        g.DrawString(title, titleFont, titleBrush, titleX, titleY);
-        DrawTitleNote(g, titleX + titleSize.Width + noteGap, titleY + ScaleY(8f), accent);
-        titleBrush.Dispose();
+        DrawRhythmBrand(g, MenuX(32f), MenuY(30f), brandFont, dimBrush);
+        DrawMenuGearButton(g, GetMenuTopSettingsButtonBounds(), _hoverMenuIndex == 0, accent);
 
-        for (int i = 0; i < 3; i++)
-        {
-            var buttonBounds = GetMenuActionButtonBounds(i);
-            DrawMenuActionButton(g, buttonBounds, GetMenuActionLabel(i), i == _hoverMenuIndex, menuButtonFont);
-        }
+        float centerX = MenuX(MainMenuDesignWidth / 2f);
+        DrawGlowingSpacedText(g, "MuWorld", titleFont, textBrush, centerX, MenuY(205f), MenuS(17f));
+        DrawMenuTagline(g, centerX, MenuY(315f) + 5f, tagFont, dimBrush, accent);
 
-        var exitBounds = GetMenuBottomButtonBounds(isRestart: false);
-        var restartBounds = GetMenuBottomButtonBounds(isRestart: true);
-        DrawExitButton(g, exitBounds, _isExitHovered, labelFont);
-        DrawRestartButton(g, restartBounds, _isMenuRestartHovered, labelFont);
+        DrawPlayMenuButton(g, GetMenuActionButtonBounds(1), _hoverMenuIndex == 1, menuFont, accent);
+        DrawSecondaryMenuRow(g, GetMenuActionButtonBounds(2), "STATISTICS", _hoverMenuIndex == 2, menuFont, accent, DrawStatsGlyph);
+        DrawSecondaryMenuDivider(g, MenuX(596f), MenuY(618f), MenuS(488f));
+        DrawSecondaryMenuRow(g, GetMenuActionButtonBounds(0), "SETTINGS", _hoverMenuIndex == 0, menuFont, accent, DrawSmallGearGlyph);
+        DrawPlayerBadge(g, smallFont, dimBrush, blueBrush);
+        DrawQuitHint(g, GetExitButtonBounds(), _isExitHovered, smallFont, dimBrush);
+    }
+
+    private void DrawMenuSummary(Graphics g, Font labelFont, Font bodyFont, Brush textBrush)
+    {
+        SongEntry[] songs = DiscoverSongs();
+        int bestScore = songs.Length == 0 ? 0 : songs.Max(s => s.HighestScore);
+        string selected = songs.Length == 0
+            ? "No songs loaded"
+            : $"{songs.Length} songs  |  Best {bestScore:N0}  |  Lane {LaneCount}K";
+        ChartGenerator.ChartGenerationSnapshot chartStatus = ChartGenerator.GetStatus();
+        if (chartStatus.IsRunning)
+            selected += $"  |  Charts {chartStatus.ProcessedSongs}/{chartStatus.TotalSongs}";
+        else if (chartStatus.GeneratedCharts > 0 || chartStatus.SkippedSongs > 0)
+            selected += $"  |  {chartStatus.LastMessage}";
+        DrawCentered(g, selected, bodyFont, textBrush, (int)ScaleX(DesignWidth / 2f), (int)ScaleY(710f));
+        DrawCentered(g, "Start opens Song Select. Detailed song records stay inside Song Select.", labelFont, textBrush, (int)ScaleX(DesignWidth / 2f), (int)ScaleY(732f));
     }
 
     // ── 인게임 화면 ───────────────────────────────────────────────────────────
     private void DrawGame(Graphics g)
     {
+        long allocationStart = GC.GetAllocatedBytesForCurrentThread();
         var state = g.Save();
 
         var playArea = GetPlayAreaBounds();
@@ -1091,10 +1718,7 @@ public sealed partial class GameForm : Form
         int laneWidth = playArea.Width / LaneCount;
 
         // ── 배경: 어두운 그라데이션 ──
-        using (var bgBrush = new LinearGradientBrush(
-            new Point(0, 0), new Point(0, h),
-            Color.FromArgb(18, 18, 30), Color.FromArgb(10, 10, 20)))
-            g.FillRectangle(bgBrush, 0, 0, w, h);
+        DrawGameplayBackground(g, w, h, playArea);
 
         // ── 플레이 영역 외부: 장식 프레임 ──
         DrawGameFrame(g, playArea);
@@ -1104,6 +1728,9 @@ public sealed partial class GameForm : Form
         {
             int laneX = playArea.Left + i * laneWidth;
             Rectangle laneBounds = new(laneX, playArea.Top, laneWidth, playArea.Height);
+            Color laneBase = GetAccessibleLaneColor(i);
+            bool pressed = _lanePressed[i];
+            bool holding = _engine.Notes.Any(n => n.State == NoteState.Holding && (n.Lane == i || n.EndLane == i));
 
             // 레인 배경: 항상 어두운 톤
             {
@@ -1116,9 +1743,46 @@ public sealed partial class GameForm : Form
             }
 
             // 레인 구분선: 캐시된 펜
-            g.DrawLine(_dividerPen, laneX, 0, laneX, h);
+            if (pressed)
+            {
+                Color pressedTint = _visualSkin.LanePressedTint ?? laneBase;
+                using var pressBrush = new SolidBrush(Color.FromArgb(58, pressedTint));
+                g.FillRectangle(pressBrush, laneBounds);
+            }
+            if (holding)
+            {
+                int pulse = (int)(42 + Math.Sin(DateTime.Now.TimeOfDay.TotalSeconds * 12.0) * 18);
+                Color holdTint = _visualSkin.LaneHoldTint ?? laneBase;
+                using var holdBrush = new SolidBrush(Color.FromArgb(Math.Clamp(pulse, 18, 70), holdTint));
+                g.FillRectangle(holdBrush, laneBounds);
+            }
+
+            if (_visualSkin.LaneSeparator is Color separator)
+            {
+                using var separatorPen = new Pen(Color.FromArgb(120, separator), Math.Max(1f, _layoutScale));
+                g.DrawLine(separatorPen, laneX, 0, laneX, h);
+            }
+            else
+            {
+                g.DrawLine(_dividerPen, laneX, 0, laneX, h);
+            }
+
+            Pen laneEdge = _renderResources.Pen(pressed || holding ? Color.FromArgb(210, laneBase) : Color.FromArgb(84, 55, 70, 98), Math.Max(1f, _layoutScale));
+            g.DrawLine(laneEdge, laneX, 0, laneX, h);
+
+            Font laneLabelFont = _renderResources.Font("Segoe UI", Math.Max(9f, 14f * _layoutScale), FontStyle.Bold);
+            SolidBrush laneLabelBrush = _renderResources.Brush(pressed || holding ? Color.White : Color.FromArgb(165, 140, 152, 178));
+            DrawCentered(g, LaneLabels[i], laneLabelFont, laneLabelBrush, laneX + laneWidth / 2, (int)(28f * _layoutScale));
         }
-        g.DrawLine(_dividerPen, playArea.Right, 0, playArea.Right, h);
+        if (_visualSkin.LaneSeparator is Color rightSeparator)
+        {
+            using var separatorPen = new Pen(Color.FromArgb(120, rightSeparator), Math.Max(1f, _layoutScale));
+            g.DrawLine(separatorPen, playArea.Right, 0, playArea.Right, h);
+        }
+        else
+        {
+            g.DrawLine(_dividerPen, playArea.Right, 0, playArea.Right, h);
+        }
 
         // ── 가이드 라인 (세로 중앙선) ──
         for (int i = 0; i < LaneCount; i++)
@@ -1138,7 +1802,7 @@ public sealed partial class GameForm : Form
         for (int i = 0; i < notes.Count; i++)
         {
             var note = notes[i];
-            if (note.State != NoteState.Active) continue;
+            if (note.State is not (NoteState.Active or NoteState.Holding or NoteState.Hit or NoteState.Miss)) continue;
             DrawStyledNote(g, note, playArea.Left, laneWidth);
         }
 
@@ -1146,34 +1810,38 @@ public sealed partial class GameForm : Form
         ApplyGameModeEffect(g, playArea, hitY);
 
         // ── 콤보 & 정확도 HUD ──
-        DrawGameHUD(g, playArea, hitY);
+        DrawGameHudDeck(g, playArea, hitY);
+        DrawComboMilestone(g, playArea, hitY);
 
         // ── 배속/모드 인디케이터 ──
-        DrawSpeedIndicator(g, playArea);
-        DrawGameModeIndicator(g, playArea);
-        DrawLaneModeIndicator(g, playArea);
+        DrawGaugeDangerOverlay(g, playArea, hitY);
 
         // ── 판정 피드백 ──
         if (_feedback is not null)
         {
             float fbElapsed = (float)(DateTime.Now - _feedbackTime).TotalMilliseconds;
-            if (fbElapsed < 600f)
+            float feedbackDuration = GetJudgmentFeedbackDuration(_feedbackJudgment);
+            if (fbElapsed < feedbackDuration)
             {
-                float prog  = fbElapsed / 600f;
+                float prog  = fbElapsed / feedbackDuration;
                 int   alpha = (int)(255 * (1f - prog));
-                float rise  = prog * 20f;
+                float rise  = prog * (_feedbackJudgment == Judgment.Bad ? 8f : 24f);
                 // 첫 글자로 빠르게 분기 (문자열 비교 제거)
-                Color fc = _feedback[0] switch
-                {
-                    'P' => Color.FromArgb(alpha, 0, 230, 255),
-                    'G' when _feedback.Length > 4 => Color.FromArgb(alpha, 100, 255, 200), // GREAT!
-                    'G' => Color.FromArgb(alpha, 140, 255, 160), // GOOD
-                    'B' when _feedback[1] == 'E' => Color.FromArgb(alpha, 180, 255, 100), // BETTER
-                    'B' => Color.FromArgb(alpha, 255, 160, 80), // BAD
-                    _   => Color.FromArgb(alpha, 200, 200, 200),
-                };
+                int shake = _feedbackJudgment == Judgment.Bad && !_reducedMotionEnabled
+                    ? (int)(MathF.Sin(prog * 42f) * ScaleX(5f) * (1f - prog))
+                    : 0;
+                Color baseFeedback = GetJudgmentAccessibleColor(_feedbackJudgment);
+                Color fc = Color.FromArgb(alpha, baseFeedback);
                 _reusableFbBrush.Color = fc;
-                DrawCentered(g, _feedback, _fbFont, _reusableFbBrush, playArea.Left + playArea.Width / 2, hitY - 90 - (int)rise);
+                Font feedbackFont = _renderResources.Font("Segoe UI", Math.Max(12f, GetJudgmentFeedbackFontSize(_feedbackJudgment) * _layoutScale), FontStyle.Bold);
+                Point feedbackAnchor = GetJudgmentFeedbackAnchor(playArea, hitY);
+                DrawCentered(g, _feedback, feedbackFont, _reusableFbBrush, feedbackAnchor.X + shake, feedbackAnchor.Y - (int)rise);
+                if (!string.IsNullOrWhiteSpace(_feedbackTiming))
+                {
+                    Font timingFont = _renderResources.Font("Segoe UI", Math.Max(8f, 13f * _layoutScale), FontStyle.Bold);
+                    SolidBrush timingBrush = _renderResources.Brush(Color.FromArgb(alpha, 220, 228, 248));
+                    DrawCentered(g, _feedbackTiming, timingFont, timingBrush, feedbackAnchor.X + shake, feedbackAnchor.Y + (int)ScaleY(34f) - (int)rise);
+                }
             }
         }
 
@@ -1181,6 +1849,160 @@ public sealed partial class GameForm : Form
             DrawPauseOverlay(g);
 
         g.Restore(state);
+        TrackGameFrameAllocations(allocationStart);
+    }
+
+    private void TrackGameFrameAllocations(long allocationStart)
+    {
+        _gameDrawFrameCount++;
+        long allocated = Math.Max(0, GC.GetAllocatedBytesForCurrentThread() - allocationStart);
+        _lastGameDrawAllocatedBytes = allocated;
+        if ((DateTime.Now - _lastAllocationLogTime).TotalSeconds < 5)
+            return;
+
+        _lastAllocationLogTime = DateTime.Now;
+        AppLogger.Info($"Game draw allocation sample: frame={_gameDrawFrameCount}, lastFrameBytes={allocated}, gdi={GdiResourceMonitor.GetCurrentGdiObjectCount()}");
+    }
+
+    private void DrawGameplayBackground(Graphics g, int width, int height, Rectangle playArea)
+    {
+        using (var bgBrush = new LinearGradientBrush(
+            new Point(0, 0), new Point(0, height),
+            Color.FromArgb(5, 8, 16), Color.FromArgb(13, 18, 32)))
+            g.FillRectangle(bgBrush, 0, 0, width, height);
+
+        if (_gameBgaImage is not null)
+        {
+            Rectangle dest = GetCoverDestination(new Rectangle(0, 0, width, height), _gameBgaImage.Width, _gameBgaImage.Height);
+            DrawImageAlpha(g, _gameBgaImage, dest, 120);
+            using var shade = new SolidBrush(Color.FromArgb(126, 4, 7, 14));
+            g.FillRectangle(shade, 0, 0, width, height);
+            return;
+        }
+
+        float position = _audio.GetInGameBgmPositionSeconds() ?? _engine.CurrentChartTime;
+        float motion = _reducedMotionEnabled ? 0f : position;
+        float groove = Math.Clamp(_grooveGauge / 100f, 0.2f, 1f);
+        Color accent = GetAccentColor();
+        using var bandBrush = new SolidBrush(Color.FromArgb((int)(18 + groove * 42), accent));
+        using var linePen = new Pen(Color.FromArgb(36, accent), Math.Max(1f, ScaleY(1.2f)));
+
+        int bandCount = 7;
+        for (int i = 0; i < bandCount; i++)
+        {
+            float phase = motion * (0.8f + i * 0.11f) + i * 0.9f;
+            float y = height * (0.18f + i * 0.11f) + MathF.Sin(phase) * ScaleY(18f);
+            RectangleF band = new(0, y, width, ScaleY(2f + i % 3));
+            g.FillRectangle(bandBrush, band);
+        }
+
+        for (int i = 0; i < LaneCount; i++)
+        {
+            int x = playArea.Left + playArea.Width * i / Math.Max(1, LaneCount);
+            g.DrawLine(linePen, x, 0, x + (int)(MathF.Sin(motion + i) * ScaleX(18f)), height);
+        }
+    }
+
+    private static Rectangle GetCoverDestination(Rectangle bounds, int imageWidth, int imageHeight)
+    {
+        if (imageWidth <= 0 || imageHeight <= 0)
+            return bounds;
+
+        float scale = Math.Max(bounds.Width / (float)imageWidth, bounds.Height / (float)imageHeight);
+        int width = (int)MathF.Ceiling(imageWidth * scale);
+        int height = (int)MathF.Ceiling(imageHeight * scale);
+        return new Rectangle(bounds.Left + (bounds.Width - width) / 2, bounds.Top + (bounds.Height - height) / 2, width, height);
+    }
+
+    private static void DrawImageAlpha(Graphics g, Image image, Rectangle bounds, int alpha)
+    {
+        alpha = Math.Clamp(alpha, 0, 255);
+        if (alpha >= 255)
+        {
+            g.DrawImage(image, bounds);
+            return;
+        }
+
+        using var attributes = new ImageAttributes();
+        float a = alpha / 255f;
+        var matrix = new ColorMatrix
+        {
+            Matrix00 = 1f,
+            Matrix11 = 1f,
+            Matrix22 = 1f,
+            Matrix33 = a,
+            Matrix44 = 1f,
+        };
+        attributes.SetColorMatrix(matrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
+        g.DrawImage(image, bounds, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, attributes);
+    }
+
+    private static float GetJudgmentFeedbackDuration(Judgment? judgment)
+    {
+        return judgment switch
+        {
+            Judgment.Perfect => 520f,
+            Judgment.Great => 560f,
+            Judgment.Better => 620f,
+            Judgment.Good => 680f,
+            Judgment.Bad => 820f,
+            _ => 600f,
+        };
+    }
+
+    private static float GetJudgmentFeedbackFontSize(Judgment? judgment)
+    {
+        return judgment switch
+        {
+            Judgment.Perfect => 28f,
+            Judgment.Great => 26f,
+            Judgment.Better => 24f,
+            Judgment.Good => 23f,
+            Judgment.Bad => 30f,
+            _ => 24f,
+        };
+    }
+
+    private Point GetJudgmentFeedbackAnchor(Rectangle playArea, int hitY)
+    {
+        int x = playArea.Left + (int)(playArea.Width * 0.74f);
+        int y = hitY - (int)ScaleY(82f);
+        int minX = playArea.Left + (int)ScaleX(90f);
+        int maxX = playArea.Right - (int)ScaleX(90f);
+        return new Point(Math.Clamp(x, minX, maxX), y);
+    }
+
+    private Color GetJudgmentAccessibleColor(Judgment? judgment)
+    {
+        if (UseHighContrast)
+        {
+            return judgment == Judgment.Bad
+                ? Color.FromArgb(255, 90, 90)
+                : Color.White;
+        }
+
+        if (_colorVisionMode > 0)
+        {
+            return judgment switch
+            {
+                Judgment.Perfect => Color.FromArgb(0, 114, 178),
+                Judgment.Great => Color.FromArgb(0, 158, 115),
+                Judgment.Better => Color.FromArgb(230, 159, 0),
+                Judgment.Good => Color.FromArgb(86, 180, 233),
+                Judgment.Bad => Color.FromArgb(213, 94, 0),
+                _ => Color.FromArgb(200, 200, 200),
+            };
+        }
+
+        return judgment switch
+        {
+            Judgment.Perfect => Color.FromArgb(0, 230, 255),
+            Judgment.Great => Color.FromArgb(100, 255, 200),
+            Judgment.Better => Color.FromArgb(180, 255, 100),
+            Judgment.Good => Color.FromArgb(140, 255, 160),
+            Judgment.Bad => Color.FromArgb(255, 90, 76),
+            _ => Color.FromArgb(200, 200, 200),
+        };
     }
 
     private void DrawPauseOverlay(Graphics g)
@@ -1189,12 +2011,110 @@ public sealed partial class GameForm : Form
         g.FillRectangle(dimBrush, 0, 0, ClientSize.Width, ClientSize.Height);
 
         using var titleFont = new Font("Segoe UI", Math.Max(18f, 38f * _layoutScale), FontStyle.Bold);
-        using var hintFont = new Font("Segoe UI", Math.Max(9f, 14f * _layoutScale), FontStyle.Bold);
+        using var hintFont = new Font("Segoe UI", Math.Max(8f, 12f * _layoutScale), FontStyle.Bold);
+        using var buttonFont = new Font("Segoe UI", Math.Max(9f, 15f * _layoutScale), FontStyle.Bold);
         using var titleBrush = new SolidBrush(Color.White);
         using var hintBrush = new SolidBrush(Color.FromArgb(220, 210, 225, 250));
 
-        DrawCentered(g, "PAUSED", titleFont, titleBrush, ClientSize.Width / 2, ClientSize.Height / 2 - (int)(55f * _layoutScale));
-        DrawCentered(g, "ESC / P Resume    Back End", hintFont, hintBrush, ClientSize.Width / 2, ClientSize.Height / 2 + (int)(8f * _layoutScale));
+        DrawCentered(g, "PAUSED", titleFont, titleBrush, ClientSize.Width / 2, ClientSize.Height / 2 - (int)(132f * _layoutScale));
+        DrawCentered(g, "Settings changes are locked while a chart is paused.", hintFont, hintBrush, ClientSize.Width / 2, ClientSize.Height / 2 - (int)(88f * _layoutScale));
+
+        for (int i = 0; i < PauseActionLabels.Length; i++)
+        {
+            bool enabled = i != 3;
+            DrawPauseOverlayActionButton(g, GetPauseActionButtonBounds(i), PauseActionLabels[i], _hoverPauseAction == i, enabled, buttonFont);
+        }
+        DrawKeyboardFocus(g, clientCoordinates: true);
+
+        DrawCentered(g, "ESC/P Resume   Back Exit", hintFont, hintBrush, ClientSize.Width / 2, ClientSize.Height / 2 + (int)(172f * _layoutScale));
+    }
+
+    private Rectangle GetPauseActionButtonBounds(int index)
+    {
+        int buttonHeight = (int)Math.Max(ScaleY(42f), 36f);
+        int gap = (int)Math.Max(ScaleY(10f), 8f);
+        int buttonWidth = Math.Max(92, Math.Min((int)ScaleX(220f), (ClientSize.Width - gap * (PauseActionLabels.Length - 1) - 16) / PauseActionLabels.Length));
+        int totalWidth = PauseActionLabels.Length * buttonWidth + (PauseActionLabels.Length - 1) * gap;
+        int startX = (ClientSize.Width - totalWidth) / 2;
+        int y = ClientSize.Height / 2 - (int)ScaleY(34f);
+        return new Rectangle(startX + index * (buttonWidth + gap), y, buttonWidth, buttonHeight);
+    }
+
+    private int GetPauseActionAt(Point location)
+    {
+        for (int i = 0; i < PauseActionLabels.Length; i++)
+            if (GetPauseActionButtonBounds(i).Contains(location))
+                return i;
+
+        return -1;
+    }
+
+    private void DrawPauseOverlayActionButton(Graphics g, Rectangle bounds, string text, bool hovered, bool enabled, Font font)
+    {
+        Color accent = enabled ? GetAccentColor() : Color.FromArgb(88, 100, 116);
+        using var path = CreateRoundedRect(bounds, ScaleY(8f));
+        using var fill = new LinearGradientBrush(
+            bounds,
+            enabled && hovered ? Color.FromArgb(180, accent) : Color.FromArgb(enabled ? 118 : 54, accent),
+            Color.FromArgb(enabled ? 74 : 38, accent),
+            LinearGradientMode.Vertical);
+        using var border = new Pen(enabled && hovered ? Color.White : Color.FromArgb(enabled ? 150 : 70, accent), Math.Max(1.2f, ScaleY(1.6f)));
+        using var textBrush = new SolidBrush(enabled ? Color.White : Color.FromArgb(160, 180, 190, 205));
+        g.FillPath(fill, path);
+        g.DrawPath(border, path);
+        DrawCentered(g, text, font, textBrush, bounds.Left + bounds.Width / 2, bounds.Top + (int)ScaleY(10f));
+    }
+
+    private void HandlePauseOverlayMouseMove(Point location)
+    {
+        int hover = GetPauseActionAt(location);
+        if (hover != _hoverPauseAction)
+        {
+            _hoverPauseAction = hover;
+            Cursor = hover >= 0 && hover != 3 ? Cursors.Hand : Cursors.Default;
+            Invalidate();
+        }
+        else
+        {
+            Cursor = hover >= 0 && hover != 3 ? Cursors.Hand : Cursors.Default;
+        }
+    }
+
+    private void HandlePauseOverlayMouseDown(Point location)
+    {
+        int action = GetPauseActionAt(location);
+        if (action < 0)
+            return;
+
+        _hoverPauseAction = action;
+        switch (action)
+        {
+            case 0:
+                ResumeGame();
+                break;
+            case 1:
+                _chartCompleteWaiting = false;
+                _isCountdownActive = false;
+                _engine.Stop();
+                _audio.StopAllSounds();
+                BeginGame();
+                break;
+            case 2:
+                _chartCompleteWaiting = false;
+                _isCountdownActive = false;
+                _isGamePaused = false;
+                _engine.Stop();
+                _audio.StopAllSounds();
+                Array.Clear(_lanePressed);
+                _mouseHeldLane = -1;
+                _screen = UiScreen.SongSelect;
+                _previewSongKey = string.Empty;
+                Invalidate();
+                break;
+            case 4:
+                EndGame();
+                break;
+        }
     }
 
     private void DrawGameFrame(Graphics g, Rectangle playArea)
@@ -1239,23 +2159,36 @@ public sealed partial class GameForm : Form
         // 글로우 배경 (히트존 주변)
         int glowHeight = 80;
         Rectangle glowRect = new(playArea.Left, hitY - glowHeight / 2, playArea.Width, glowHeight);
+        Color hitGlow = _visualSkin.HitGlow ?? Color.FromArgb(0, 170, 255);
+        Color hitGlowBottom = _visualSkin.HitGlowBottom ?? Color.FromArgb(255, 230, 70);
+        Color hitLine = _visualSkin.HitLine ?? Color.FromArgb(255, 200, 80);
         using var glowBrush = new LinearGradientBrush(glowRect,
-            Color.FromArgb(0, 255, 180, 50),
-            Color.FromArgb(60, 255, 160, 30),
+            Color.FromArgb(0, hitGlow),
+            Color.FromArgb(70, hitGlow),
             LinearGradientMode.Vertical);
         g.FillRectangle(glowBrush, glowRect);
 
         // 히트존 아래 강한 글로우
         Rectangle bottomGlow = new(playArea.Left, hitY - 4, playArea.Width, 40);
         using var bottomGlowBrush = new LinearGradientBrush(bottomGlow,
-            Color.FromArgb(120, 255, 180, 50),
-            Color.FromArgb(0, 255, 140, 20),
+            Color.FromArgb(150, hitGlowBottom),
+            Color.FromArgb(0, hitGlow),
             LinearGradientMode.Vertical);
         g.FillRectangle(bottomGlowBrush, bottomGlow);
 
         // 판정선 (밝은 오렌지-골드) — 캐시된 펜 사용
-        g.DrawLine(_hitPen1, playArea.Left, hitY, playArea.Right, hitY);
-        g.DrawLine(_hitPen2, playArea.Left, hitY - 1, playArea.Right, hitY - 1);
+        if (_visualSkin.HitLine is null)
+        {
+            g.DrawLine(_hitPen1, playArea.Left, hitY, playArea.Right, hitY);
+            g.DrawLine(_hitPen2, playArea.Left, hitY - 1, playArea.Right, hitY - 1);
+        }
+        else
+        {
+            using var hitPen1 = new Pen(Color.FromArgb(220, hitLine), Math.Max(2f, 3f * _layoutScale));
+            using var hitPen2 = new Pen(Color.FromArgb(140, ControlPaint.Light(hitLine, 0.35f)), Math.Max(1f, 1.5f * _layoutScale));
+            g.DrawLine(hitPen1, playArea.Left, hitY, playArea.Right, hitY);
+            g.DrawLine(hitPen2, playArea.Left, hitY - 1, playArea.Right, hitY - 1);
+        }
     }
 
     private void DrawPianoKeys(Graphics g, Rectangle playArea, int hitY, int laneWidth)
@@ -1270,8 +2203,12 @@ public sealed partial class GameForm : Form
 
             // 피아노 키 배경: 누르면 흰색, 안 누르면 검은색
             bool pressed = _lanePressed[i];
-            Color keyTop = pressed ? Color.FromArgb(200, 210, 220) : Color.FromArgb(55, 60, 70);
-            Color keyBot = pressed ? Color.FromArgb(170, 180, 195) : Color.FromArgb(35, 40, 50);
+            Color keyTop = pressed
+                ? _visualSkin.KeyPressedTop ?? Color.FromArgb(200, 210, 220)
+                : _visualSkin.KeyTop ?? Color.FromArgb(55, 60, 70);
+            Color keyBot = pressed
+                ? _visualSkin.KeyPressedBottom ?? Color.FromArgb(170, 180, 195)
+                : _visualSkin.KeyBottom ?? Color.FromArgb(35, 40, 50);
 
             using var keyBrush = new LinearGradientBrush(keyRect, keyTop, keyBot, LinearGradientMode.Vertical);
             using var keyPath = CreateRoundedRect(keyRect, 4f);
@@ -1283,13 +2220,45 @@ public sealed partial class GameForm : Form
         }
     }
 
+    private Color GetAccessibleLaneColor(int lane)
+    {
+        if (UseHighContrast)
+            return lane % 2 == 0 ? Color.White : Color.FromArgb(255, 230, 0);
+
+        int index = Math.Clamp(lane, 0, LaneColors.Length - 1);
+        if (_colorVisionMode <= 0)
+            return _visualSkin.GetLaneColor(index, LaneColors[index]);
+
+        Color[] palette =
+        [
+            Color.FromArgb(0, 114, 178),
+            Color.FromArgb(230, 159, 0),
+            Color.FromArgb(0, 158, 115),
+            Color.FromArgb(204, 121, 167),
+            Color.FromArgb(86, 180, 233),
+            Color.FromArgb(213, 94, 0),
+            Color.FromArgb(240, 228, 66),
+        ];
+        return palette[index % palette.Length];
+    }
+
     private void DrawStyledNote(Graphics g, Note note, int playAreaLeft, int laneWidth)
     {
         int nx = playAreaLeft + note.Lane * laneWidth + 6;
         int ny = (int)note.Y;
         int nw = laneWidth - 12;
         int nh = (int)Note.Height;
-        int colorIndex = note.Lane % _noteGlowBrushes.Length;
+        Color laneColor = GetAccessibleLaneColor(note.Lane);
+        Color noteTop = UseHighContrast ? Color.White : Color.FromArgb(240, ControlPaint.Light(laneColor, 0.3f));
+        Color noteBottom = UseHighContrast ? Color.Black : Color.FromArgb(220, laneColor);
+        float resolvedAge = note.State is NoteState.Hit or NoteState.Miss
+            ? Math.Max(0f, _engine.CurrentChartTime - note.ResolvedTime)
+            : 0f;
+        int resolvedAlpha = note.State is NoteState.Hit or NoteState.Miss
+            ? Math.Clamp((int)(255f * (1f - resolvedAge / 0.55f)), 35, 255)
+            : 255;
+        if (note.State == NoteState.Miss)
+            nx += (int)(Math.Sin(resolvedAge * 80f) * Math.Max(1f, 7f * (1f - Math.Min(1f, resolvedAge / 0.45f))));
 
         if (note.Type != NoteType.Tap)
         {
@@ -1302,8 +2271,8 @@ public sealed partial class GameForm : Form
 
             using var bodyBrush = new LinearGradientBrush(
                 bodyBounds,
-                Color.FromArgb(90, _noteTopColors[colorIndex]),
-                Color.FromArgb(35, _noteBotColors[colorIndex]),
+                note.State == NoteState.Miss ? Color.FromArgb(120, 255, 70, 72) : Color.FromArgb(note.State == NoteState.Holding ? 130 : 90, noteTop),
+                note.State == NoteState.Miss ? Color.FromArgb(30, 255, 70, 72) : Color.FromArgb(35, noteBottom),
                 LinearGradientMode.Vertical);
 
             if (note.Type == NoteType.Slide && endLane != note.Lane)
@@ -1314,41 +2283,306 @@ public sealed partial class GameForm : Form
                     EndCap = LineCap.Round,
                 };
                 g.DrawLine(bodyPen, nx + nw / 2, ny + nh / 2, endX + nw / 2, endY + nh / 2);
+                DrawSlideArrowSkin(g, nx + nw / 2, ny + nh / 2, endX + nw / 2, endY + nh / 2, laneWidth, resolvedAlpha);
             }
             else
             {
                 Rectangle bodyRect = new(nx + nw / 3, bodyTop, Math.Max(8, nw / 3), bodyHeight);
                 using var bodyPath = CreateRoundedRect(bodyRect, 6f);
                 g.FillPath(bodyBrush, bodyPath);
+                if (_visualSkin.LongTail is not null)
+                    DrawImageAlpha(g, _visualSkin.LongTail, bodyRect, note.State == NoteState.Miss ? Math.Min(160, resolvedAlpha) : 210);
+                if (note.State == NoteState.Holding && note.Duration > 0f)
+                {
+                    int fillHeight = Math.Max(2, (int)(bodyHeight * note.HoldProgress));
+                    Rectangle fillRect = new(bodyRect.Left, bodyRect.Bottom - fillHeight, bodyRect.Width, fillHeight);
+                    using var fillBrush = new SolidBrush(Color.FromArgb(125, 255, 255, 255));
+                    g.FillRectangle(fillBrush, fillRect);
+                }
             }
         }
 
         // 노트 글로우 (뒤쪽) — 캐시된 브러시 사용
         Rectangle glowRect = new(nx - 3, ny - 2, nw + 6, nh + 4);
-        g.FillRectangle(_noteGlowBrushes[colorIndex], glowRect);
+        if (note.State == NoteState.Miss)
+        {
+            using var missGlow = new SolidBrush(Color.FromArgb(Math.Min(180, resolvedAlpha), 255, 54, 64));
+            g.FillRectangle(missGlow, glowRect);
+        }
+        else
+        {
+            using var glowBrush = new SolidBrush(Color.FromArgb(UseHighContrast ? 130 : 50, laneColor));
+            g.FillRectangle(glowBrush, glowRect);
+        }
 
         // 노트 본체 (둥근 바)
         Rectangle noteRect = new(nx, ny, nw, nh);
         using var notePath = CreateRoundedRect(noteRect, 5f);
 
         // 그라데이션 — 캐시된 색상 사용
-        using var noteBrush = new LinearGradientBrush(noteRect, _noteTopColors[colorIndex], _noteBotColors[colorIndex], LinearGradientMode.Vertical);
-        g.FillPath(noteBrush, notePath);
+        Color top = note.State == NoteState.Miss ? Color.FromArgb(resolvedAlpha, 255, 86, 92) : Color.FromArgb(resolvedAlpha, noteTop);
+        Color bottom = note.State == NoteState.Miss ? Color.FromArgb(resolvedAlpha, 145, 24, 36) : Color.FromArgb(resolvedAlpha, noteBottom);
+        using var noteBrush = new LinearGradientBrush(noteRect, top, bottom, LinearGradientMode.Vertical);
+        if (_visualSkin.NoteBody is not null && note.State != NoteState.Miss)
+            DrawImageAlpha(g, _visualSkin.NoteBody, noteRect, resolvedAlpha);
+        else
+            g.FillPath(noteBrush, notePath);
 
         // 노트 하이라이트 (상단 밝은 줄) — 캐시된 브러시
         Rectangle highlightRect = new(nx + 2, ny + 1, nw - 4, nh / 3);
         g.FillRectangle(_noteHighlightBrush, highlightRect);
 
+        if (note.State == NoteState.Holding)
+        {
+            float pulse = (float)(Math.Sin(DateTime.Now.TimeOfDay.TotalSeconds * 18.0) * 0.5 + 0.5);
+            using var holdPen = new Pen(Color.FromArgb((int)(130 + pulse * 90), 255, 255, 255), Math.Max(1.5f, 2f * _layoutScale));
+            g.DrawPath(holdPen, notePath);
+        }
+        else if (note.State == NoteState.Miss)
+        {
+            using var missPen = new Pen(Color.FromArgb(resolvedAlpha, 255, 210, 210), Math.Max(2f, 3f * _layoutScale));
+            g.DrawLine(missPen, noteRect.Left + 4, noteRect.Top + 4, noteRect.Right - 4, noteRect.Bottom - 4);
+            g.DrawLine(missPen, noteRect.Right - 4, noteRect.Top + 4, noteRect.Left + 4, noteRect.Bottom - 4);
+        }
+
+        if (note.State == NoteState.Hit && _visualSkin.HitBurst is not null)
+            DrawImageAlpha(g, _visualSkin.HitBurst, Rectangle.Inflate(noteRect, nw / 3, nh), Math.Min(220, resolvedAlpha));
+        if (note.State == NoteState.Miss && _visualSkin.MissEffect is not null)
+            DrawImageAlpha(g, _visualSkin.MissEffect, Rectangle.Inflate(noteRect, nw / 4, nh / 2), Math.Min(230, resolvedAlpha));
+
         // 노트 테두리 — 캐시된 펜
         if (_colorVisionMode > 0 || UseHighContrast)
         {
-            using var labelFont = new Font("Segoe UI", Math.Max(7f, laneWidth * 0.08f), FontStyle.Bold);
-            using var labelBrush = new SolidBrush(UseHighContrast ? Color.Black : Color.White);
+            Font labelFont = _renderResources.Font("Segoe UI", Math.Max(7f, laneWidth * 0.08f), FontStyle.Bold);
+            SolidBrush labelBrush = _renderResources.Brush(UseHighContrast ? Color.Black : Color.White);
             string noteLabel = LaneLabels[Math.Min(note.Lane, LaneLabels.Length - 1)];
             DrawCentered(g, noteLabel, labelFont, labelBrush, nx + nw / 2, ny + Math.Max(1, nh / 8));
         }
 
         g.DrawPath(_noteBorderPen, notePath);
+    }
+
+    private void DrawSlideArrowSkin(Graphics g, int startX, int startY, int endX, int endY, int laneWidth, int alpha)
+    {
+        float dx = endX - startX;
+        float dy = endY - startY;
+        if (Math.Abs(dx) + Math.Abs(dy) < 1f)
+            return;
+
+        float centerX = (startX + endX) / 2f;
+        float centerY = (startY + endY) / 2f;
+        float angle = MathF.Atan2(dy, dx) * 180f / MathF.PI;
+        int size = Math.Max(20, (int)(laneWidth * 0.32f));
+        Rectangle bounds = new((int)centerX - size / 2, (int)centerY - size / 2, size, size);
+
+        var state = g.Save();
+        g.TranslateTransform(centerX, centerY);
+        g.RotateTransform(angle);
+        g.TranslateTransform(-centerX, -centerY);
+
+        if (_visualSkin.SlideArrow is not null)
+        {
+            DrawImageAlpha(g, _visualSkin.SlideArrow, bounds, Math.Min(230, alpha));
+        }
+        else
+        {
+            using var arrowBrush = new SolidBrush(Color.FromArgb(Math.Min(190, alpha), 255, 255, 255));
+            Point[] arrow =
+            [
+                new(bounds.Right, bounds.Top + bounds.Height / 2),
+                new(bounds.Left, bounds.Top),
+                new(bounds.Left + bounds.Width / 3, bounds.Top + bounds.Height / 2),
+                new(bounds.Left, bounds.Bottom),
+            ];
+            g.FillPolygon(arrowBrush, arrow);
+        }
+
+        g.Restore(state);
+    }
+
+    private void DrawGameHudDeck(Graphics g, Rectangle playArea, int hitY)
+    {
+        int centerX = playArea.Left + playArea.Width / 2;
+        var score = _engine.Score;
+        float accuracy = score.Accuracy;
+
+        Rectangle topBar = new(playArea.Left, 0, playArea.Width, (int)Math.Round(82f * _layoutScale));
+        using (var topFill = new LinearGradientBrush(topBar, Color.FromArgb(205, 8, 13, 25), Color.FromArgb(80, 8, 13, 25), LinearGradientMode.Vertical))
+            g.FillRectangle(topFill, topBar);
+
+        Font labelFont = _renderResources.Font("Segoe UI", Math.Max(8f, 12f * _layoutScale), FontStyle.Bold);
+        Font valueFont = _renderResources.Font("Segoe UI", Math.Max(12f, 22f * _layoutScale), FontStyle.Bold);
+        Font comboFont = _renderResources.Font("Segoe UI", Math.Max(24f, 56f * _layoutScale), FontStyle.Bold);
+        SolidBrush labelBrush = _renderResources.Brush(Color.FromArgb(190, 150, 165, 195));
+        SolidBrush valueBrush = _renderResources.Brush(Color.White);
+        SolidBrush accentBrush = _renderResources.Brush(GetAccentColor());
+
+        g.DrawString("SCORE", labelFont, labelBrush, playArea.Left + ScaleX(16f), ScaleY(10f));
+        g.DrawString(score.Score.ToString("N0"), valueFont, valueBrush, playArea.Left + ScaleX(14f), ScaleY(26f));
+
+        string accText = $"{accuracy:F1}%";
+        SizeF accSize = g.MeasureString(accText, valueFont);
+        g.DrawString("SYNC", labelFont, labelBrush, playArea.Right - accSize.Width - ScaleX(18f), ScaleY(10f));
+        g.DrawString(accText, valueFont, accentBrush, playArea.Right - accSize.Width - ScaleX(16f), ScaleY(26f));
+
+        DrawGrooveGauge(g, playArea, topBar, labelFont);
+        DrawHudMetaRow(g, playArea, topBar, labelFont);
+
+        if (score.Combo > 0)
+        {
+            if (score.Combo != _cachedComboValue)
+            {
+                _cachedComboValue = score.Combo;
+                _cachedComboText = score.Combo.ToString();
+            }
+
+            DrawCentered(g, _cachedComboText, comboFont, valueBrush, centerX, (int)ScaleY(92f));
+            DrawCentered(g, "COMBO", labelFont, accentBrush, centerX, (int)ScaleY(158f));
+        }
+
+        if (score.PerfectCount != _cachedStatsPerfect || score.GreatCount != _cachedStatsGreat ||
+            score.BetterCount != _cachedStatsBetter || score.GoodCount != _cachedStatsGood ||
+            score.BadCount != _cachedStatsBad || score.MissCount != _cachedStatsMiss)
+        {
+            _cachedStatsPerfect = score.PerfectCount;
+            _cachedStatsGreat = score.GreatCount;
+            _cachedStatsBetter = score.BetterCount;
+            _cachedStatsGood = score.GoodCount;
+            _cachedStatsBad = score.BadCount;
+            _cachedStatsMiss = score.MissCount;
+            _cachedStatsText = $"P {score.PerfectCount}   GR {score.GreatCount}   G {score.GoodCount}   B {score.BadCount}   M {score.MissCount}";
+        }
+
+        SizeF statsSize = g.MeasureString(_cachedStatsText, _statFont);
+        RectangleF statsRect = new(centerX - statsSize.Width / 2f - ScaleX(12f), hitY + ScaleY(40f), statsSize.Width + ScaleX(24f), statsSize.Height + ScaleY(8f));
+        SolidBrush statsBg = _renderResources.Brush(Color.FromArgb(150, 8, 13, 25));
+        g.FillRectangle(statsBg, statsRect);
+        g.DrawString(_cachedStatsText, _statFont, _statBrush, statsRect.Left + ScaleX(12f), statsRect.Top + ScaleY(4f));
+    }
+
+    private void DrawComboMilestone(Graphics g, Rectangle playArea, int hitY)
+    {
+        if (string.IsNullOrWhiteSpace(_comboMilestoneText))
+            return;
+
+        float elapsed = (float)(DateTime.Now - _comboMilestoneTime).TotalMilliseconds;
+        const float duration = 1100f;
+        if (elapsed >= duration)
+            return;
+
+        float progress = elapsed / duration;
+        int alpha = (int)(230 * (1f - progress));
+        float lift = _reducedMotionEnabled ? 0f : progress * ScaleY(16f);
+        Color accent = GetAccentColor();
+        int width = Math.Min((int)ScaleX(230f), playArea.Width - 24);
+        Rectangle bounds = Rectangle.Round(new RectangleF(
+            playArea.Left + (playArea.Width - width) / 2f,
+            hitY - ScaleY(160f) - lift,
+            width,
+            ScaleY(34f)));
+
+        using var path = CreateRoundedRect(bounds, ScaleY(8f));
+        using var fill = new SolidBrush(Color.FromArgb(Math.Clamp(alpha / 2, 0, 120), accent));
+        using var border = new Pen(Color.FromArgb(Math.Clamp(alpha, 0, 220), accent), Math.Max(1f, ScaleY(1.4f)));
+        using var textBrush = new SolidBrush(Color.FromArgb(Math.Clamp(alpha, 0, 255), Color.White));
+        using var font = new Font("Segoe UI", Math.Max(8f, 14f * _layoutScale), FontStyle.Bold);
+        g.FillPath(fill, path);
+        g.DrawPath(border, path);
+        DrawCentered(g, _comboMilestoneText, font, textBrush, bounds.Left + bounds.Width / 2, bounds.Top + (int)ScaleY(7f));
+    }
+
+    private void DrawHudMetaRow(Graphics g, Rectangle playArea, Rectangle topBar, Font font)
+    {
+        (string label, string value)[] chips =
+        [
+            ("SPD", $"x{_speedMultiplier:F1}"),
+            ("MODE", GetGameModeLabel()),
+            ("LANE", $"{LaneCount}K"),
+            ("PLAY", PlayModeLabels[Math.Clamp(_playModeIndex, 0, PlayModeLabels.Length - 1)]),
+        ];
+
+        int gap = Math.Max(3, (int)ScaleX(4f));
+        int chipWidth = Math.Max(58, (playArea.Width - gap * (chips.Length - 1)) / chips.Length);
+        int chipHeight = Math.Max(17, (int)ScaleY(19f));
+        int y = topBar.Bottom - chipHeight - Math.Max(3, (int)ScaleY(4f));
+        SolidBrush labelBrush = _renderResources.Brush(Color.FromArgb(170, 170, 188, 220));
+        SolidBrush valueBrush = _renderResources.Brush(Color.FromArgb(230, 244, 248, 255));
+        Pen border = _renderResources.Pen(Color.FromArgb(90, 115, 145, 205), Math.Max(1f, ScaleY(1f)));
+        SolidBrush fill = _renderResources.Brush(Color.FromArgb(82, 12, 18, 34));
+
+        for (int i = 0; i < chips.Length; i++)
+        {
+            Rectangle bounds = new(playArea.Left + i * (chipWidth + gap), y, chipWidth, chipHeight);
+            using var path = CreateRoundedRect(bounds, ScaleY(5f));
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+
+            string text = $"{chips[i].label} {chips[i].value}";
+            SizeF textSize = g.MeasureString(text, font);
+            Brush brush = i == 1 && _gameMode != GameMode.Normal ? valueBrush : labelBrush;
+            g.DrawString(text, font, brush, bounds.Left + (bounds.Width - textSize.Width) / 2f, bounds.Top + (bounds.Height - textSize.Height) / 2f);
+        }
+    }
+
+    private void DrawGrooveGauge(Graphics g, Rectangle playArea, Rectangle topBar, Font labelFont)
+    {
+        GaugeRule rule = GetGaugeRule(_songSelectDifficultyIndex);
+        float ratio = Math.Clamp(_grooveGauge / 100f, 0f, 1f);
+        bool danger = IsGaugeDanger();
+        int gaugeWidth = (int)Math.Min(ScaleX(310f), playArea.Width * 0.34f);
+        Rectangle gauge = Rectangle.Round(new RectangleF(
+            playArea.Left + (playArea.Width - gaugeWidth) / 2f,
+            topBar.Top + ScaleY(20f),
+            gaugeWidth,
+            ScaleY(13f)));
+
+        Color fillColor = IsPracticeMode
+            ? Color.FromArgb(112, 178, 255)
+            : danger
+                ? Color.FromArgb(255, 82, 72)
+                : GetAccentColor();
+
+        SolidBrush bg = _renderResources.Brush(Color.FromArgb(120, 20, 26, 42));
+        Pen border = _renderResources.Pen(Color.FromArgb(155, 145, 165, 205), Math.Max(1f, ScaleY(1.1f)));
+        g.FillRectangle(bg, gauge);
+        g.DrawRectangle(border, gauge);
+
+        Rectangle fill = new(gauge.Left + 1, gauge.Top + 1, Math.Max(0, (int)((gauge.Width - 2) * ratio)), Math.Max(1, gauge.Height - 2));
+        if (fill.Width > 0)
+        {
+            using var fillBrush = new LinearGradientBrush(fill, Color.FromArgb(230, fillColor), Color.FromArgb(145, fillColor), LinearGradientMode.Vertical);
+            g.FillRectangle(fillBrush, fill);
+        }
+
+        int thresholdX = gauge.Left + (int)(gauge.Width * Math.Clamp(rule.ClearThreshold / 100f, 0f, 1f));
+        Pen thresholdPen = _renderResources.Pen(Color.FromArgb(230, 255, 235, 135), Math.Max(1f, ScaleY(1.4f)));
+        g.DrawLine(thresholdPen, thresholdX, gauge.Top - 2, thresholdX, gauge.Bottom + 2);
+
+        string mode = PlayModeLabels[Math.Clamp(_playModeIndex, 0, PlayModeLabels.Length - 1)];
+        string label = IsPracticeMode
+            ? $"{mode}  {_grooveGauge:F0}%"
+            : $"GROOVE  {_grooveGauge:F0}% / CLEAR {rule.ClearThreshold:F0}%";
+        SolidBrush textBrush = _renderResources.Brush(danger ? Color.FromArgb(255, 230, 225) : Color.FromArgb(218, 232, 255));
+        DrawCentered(g, label, labelFont, textBrush, gauge.Left + gauge.Width / 2, gauge.Bottom + (int)ScaleY(5f));
+    }
+
+    private void DrawGaugeDangerOverlay(Graphics g, Rectangle playArea, int hitY)
+    {
+        if (!IsGaugeDanger())
+            return;
+
+        float pulse = _reducedMotionEnabled
+            ? 0.65f
+            : 0.55f + MathF.Sin((float)DateTime.Now.TimeOfDay.TotalSeconds * 8f) * 0.18f;
+        int alpha = Math.Clamp((int)(95f * pulse), 30, 120);
+        using var edgePen = new Pen(Color.FromArgb(alpha + 85, 255, 72, 68), Math.Max(2f, ScaleY(4f)));
+        using var hitBrush = new SolidBrush(Color.FromArgb(alpha, 255, 40, 36));
+        using var textBrush = new SolidBrush(Color.FromArgb(230, 255, 228, 228));
+        Font warningFont = _renderResources.Font("Segoe UI", Math.Max(9f, 15f * _layoutScale), FontStyle.Bold);
+
+        g.DrawRectangle(edgePen, Rectangle.Inflate(playArea, -(int)ScaleX(2f), -(int)ScaleY(2f)));
+        g.FillRectangle(hitBrush, playArea.Left, hitY - (int)ScaleY(8f), playArea.Width, (int)ScaleY(18f));
+        DrawCentered(g, "LOW GROOVE", warningFont, textBrush, playArea.Left + playArea.Width / 2, hitY - (int)ScaleY(34f));
     }
 
     private void DrawGameHUD(Graphics g, Rectangle playArea, int hitY)
@@ -1369,10 +2603,9 @@ public sealed partial class GameForm : Form
         }
 
         // ── 정확도 표시 (하단 중앙, 노란색 그라데이션) ──
-        int totalNotes = score.PerfectCount + score.GreatCount + score.BetterCount + score.GoodCount + score.BadCount + score.MissCount;
-        if (totalNotes > 0)
+        if (score.TotalJudgedNotes > 0)
         {
-            float accuracy = (score.PerfectCount * 100f + score.GreatCount * 90f + score.BetterCount * 75f + score.GoodCount * 50f + score.BadCount * 25f) / totalNotes;
+            float accuracy = score.Accuracy;
             string accText = $"{accuracy:F2}%";
             SizeF accSize = g.MeasureString(accText, _accFont);
             float accX = centerX - accSize.Width / 2f;
@@ -1423,7 +2656,12 @@ public sealed partial class GameForm : Form
 
     private void OnMenuMouseMove(object? sender, MouseEventArgs e)
     {
-        if (_engine.IsRunning) return;
+        if (_engine.IsRunning)
+        {
+            if (_isGamePaused)
+                HandlePauseOverlayMouseMove(e.Location);
+            return;
+        }
 
         Point logicalPoint = ToLogicalPoint(e.Location);
 
@@ -1495,6 +2733,66 @@ public sealed partial class GameForm : Form
             return;
         }
 
+        if (_screen == UiScreen.InputCalibration)
+        {
+            bool backHover = GetCalibrationBackButtonBounds().Contains(logicalPoint);
+            bool startHover = GetCalibrationStartButtonBounds().Contains(logicalPoint);
+            if (backHover != _isCalibrationBackHovered || startHover != _isCalibrationStartHovered)
+            {
+                _isCalibrationBackHovered = backHover;
+                _isCalibrationStartHovered = startHover;
+                Cursor = (backHover || startHover) ? Cursors.Hand : Cursors.Default;
+                Invalidate();
+            }
+            else
+            {
+                Cursor = (backHover || startHover) ? Cursors.Hand : Cursors.Default;
+            }
+            return;
+        }
+
+        if (_screen == UiScreen.InputCalibration)
+        {
+            if (_isCalibrationBackHovered || _isCalibrationStartHovered)
+            {
+                _isCalibrationBackHovered = false;
+                _isCalibrationStartHovered = false;
+                Cursor = Cursors.Default;
+                Invalidate();
+            }
+            return;
+        }
+
+        if (_screen == UiScreen.KeyBindings)
+        {
+            bool changed = UpdateKeyBindingsHover(logicalPoint);
+            Cursor = IsKeyBindingsInteractive(logicalPoint) ? Cursors.Hand : Cursors.Default;
+            if (changed)
+                Invalidate();
+            return;
+        }
+
+        if (_screen == UiScreen.ChartEditor)
+        {
+            bool changed = UpdateChartEditorHover(logicalPoint);
+            Cursor = IsChartEditorInteractive(logicalPoint) ? Cursors.Hand : Cursors.Default;
+            if (changed)
+                Invalidate();
+            return;
+        }
+
+        if (_screen == UiScreen.KeyBindings)
+        {
+            if (_hoverKeyBindingLane != -1 || _hoverKeyBindingAction != -1)
+            {
+                _hoverKeyBindingLane = -1;
+                _hoverKeyBindingAction = -1;
+                Cursor = Cursors.Default;
+                Invalidate();
+            }
+            return;
+        }
+
         if (_screen == UiScreen.Analyze)
         {
             bool okHover = GetAnalyzeOkButtonBounds().Contains(logicalPoint);
@@ -1513,21 +2811,28 @@ public sealed partial class GameForm : Form
 
         int hoverIndex = GetHoveredMenuIndex(logicalPoint);
         bool exitHovered = GetExitButtonBounds().Contains(logicalPoint);
-        bool restartHovered = GetMenuBottomButtonBounds(isRestart: true).Contains(logicalPoint);
 
-        if (exitHovered != _isExitHovered || restartHovered != _isMenuRestartHovered || hoverIndex != _hoverMenuIndex)
+        if (exitHovered != _isExitHovered || hoverIndex != _hoverMenuIndex)
         {
             _isExitHovered = exitHovered;
-            _isMenuRestartHovered = restartHovered;
             _hoverMenuIndex = hoverIndex;
-            Cursor = exitHovered || restartHovered || hoverIndex >= 0 ? Cursors.Hand : Cursors.Default;
+            Cursor = exitHovered || hoverIndex >= 0 ? Cursors.Hand : Cursors.Default;
             Invalidate();
         }
     }
 
     private void OnMenuMouseLeave(object? sender, EventArgs e)
     {
-        if (_engine.IsRunning) return;
+        if (_engine.IsRunning)
+        {
+            if (_hoverPauseAction != -1)
+            {
+                _hoverPauseAction = -1;
+                Cursor = Cursors.Default;
+                Invalidate();
+            }
+            return;
+        }
 
         if (_screen == UiScreen.Settings)
         {
@@ -1583,10 +2888,20 @@ public sealed partial class GameForm : Form
             return;
         }
 
-        if (_isExitHovered || _isMenuRestartHovered || _hoverMenuIndex != -1)
+        if (_screen == UiScreen.ChartEditor)
+        {
+            if (_hoverChartEditorAction != -1)
+            {
+                _hoverChartEditorAction = -1;
+                Cursor = Cursors.Default;
+                Invalidate();
+            }
+            return;
+        }
+
+        if (_isExitHovered || _hoverMenuIndex != -1)
         {
             _isExitHovered = false;
-            _isMenuRestartHovered = false;
             _hoverMenuIndex = -1;
             Cursor = Cursors.Default;
             Invalidate();
@@ -1596,7 +2911,17 @@ public sealed partial class GameForm : Form
     private void OnMenuMouseDown(object? sender, MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left) return;
-        if (_engine.IsRunning) return;
+        if (_engine.IsRunning)
+        {
+            if (_isGamePaused)
+            {
+                HandlePauseOverlayMouseDown(e.Location);
+                return;
+            }
+
+            HandleGameplayMouseDown(e.Location);
+            return;
+        }
 
         if (_screen == UiScreen.Splash)
         {
@@ -1618,6 +2943,12 @@ public sealed partial class GameForm : Form
             return;
         }
 
+        if (_screen == UiScreen.SongDetail)
+        {
+            HandleSongDetailMouseDown(logicalPoint);
+            return;
+        }
+
         if (_screen == UiScreen.Achievement)
         {
             HandleAchievementMouseDown(logicalPoint);
@@ -1630,6 +2961,24 @@ public sealed partial class GameForm : Form
             return;
         }
 
+        if (_screen == UiScreen.InputCalibration)
+        {
+            HandleInputCalibrationMouseDown(logicalPoint);
+            return;
+        }
+
+        if (_screen == UiScreen.KeyBindings)
+        {
+            HandleKeyBindingsMouseDown(logicalPoint);
+            return;
+        }
+
+        if (_screen == UiScreen.ChartEditor)
+        {
+            HandleChartEditorMouseDown(logicalPoint, e.Button);
+            return;
+        }
+
         if (_screen == UiScreen.Analyze)
         {
             HandleAnalyzeMouseDown(logicalPoint);
@@ -1639,12 +2988,6 @@ public sealed partial class GameForm : Form
         if (GetExitButtonBounds().Contains(logicalPoint))
         {
             Close();
-            return;
-        }
-
-        if (GetMenuBottomButtonBounds(isRestart: true).Contains(logicalPoint))
-        {
-            RestartApplicationViaRunBat();
             return;
         }
 
@@ -1663,6 +3006,12 @@ public sealed partial class GameForm : Form
 
     private void OnMenuMouseUp(object? sender, MouseEventArgs e)
     {
+        if (_engine.IsRunning)
+        {
+            HandleGameplayMouseUp();
+            return;
+        }
+
         _draggedSlider = SettingsSlider.None;
 
         if (!_engine.IsRunning && _screen == UiScreen.Settings)
@@ -1686,10 +3035,24 @@ public sealed partial class GameForm : Form
                 ? Cursors.Hand
                 : Cursors.Default;
         }
+
+        if (!_engine.IsRunning && _screen == UiScreen.InputCalibration)
+        {
+            Point logicalPoint = ToLogicalPoint(e.Location);
+            Cursor = (GetCalibrationBackButtonBounds().Contains(logicalPoint) || GetCalibrationStartButtonBounds().Contains(logicalPoint))
+                ? Cursors.Hand
+                : Cursors.Default;
+        }
+
+        if (!_engine.IsRunning && _screen == UiScreen.KeyBindings)
+            Cursor = IsKeyBindingsInteractive(ToLogicalPoint(e.Location)) ? Cursors.Hand : Cursors.Default;
     }
 
     private int GetHoveredMenuIndex(Point point)
     {
+        if (GetMenuTopSettingsButtonBounds().Contains(point))
+            return 0;
+
         for (int i = 0; i < 3; i++)
             if (GetMenuActionButtonBounds(i).Contains(point))
                 return i;
@@ -1699,102 +3062,312 @@ public sealed partial class GameForm : Form
 
     private Rectangle GetMenuActionButtonBounds(int index)
     {
-        float width = 365f;
-        float height = 76f;
-        float gap = 22f;
-        float startY = 250f;
-        float y = startY + index * (height + gap);
-        return Rectangle.Round(new RectangleF(ScaleX((DesignWidth - width) / 2f), ScaleY(y), ScaleX(width), ScaleY(height)));
-    }
-
-    private static string GetMenuActionLabel(int index)
-    {
         return index switch
         {
-            0 => "SETTINGS",
-            1 => "SONG SELECT",
-            _ => "ACHIEVEMENT",
+            0 => MenuRect(615f, 646f, 450f, 58f),
+            1 => MenuRect(584f, 412f, 512f, 100f),
+            _ => MenuRect(615f, 552f, 450f, 58f),
         };
     }
 
-    private void DrawMenuActionButton(Graphics g, Rectangle bounds, string label, bool hovered, Font font)
+    private Rectangle GetMenuTopSettingsButtonBounds()
     {
-        Color accent = GetAccentColor();
-        var shadowBounds = bounds;
-        shadowBounds.Offset(0, (int)ScaleY(8f));
-        using (var shadowPath = CreateRoundedRect(shadowBounds, shadowBounds.Height / 2f))
-        using (var shadowBrush = new SolidBrush(Color.FromArgb(44, 44, 83, 135)))
-        {
-            g.FillPath(shadowBrush, shadowPath);
-        }
-
-        var drawBounds = bounds;
-        if (hovered)
-            drawBounds.Offset(0, -(int)ScaleY(3f));
-
-        using var outerPath = CreateRoundedRect(drawBounds, drawBounds.Height / 2f);
-        using var fillBrush = new LinearGradientBrush(drawBounds, Color.FromArgb(180, accent), Color.FromArgb(115, accent), LinearGradientMode.Vertical);
-        using var glossBrush = new LinearGradientBrush(new Rectangle(drawBounds.X, drawBounds.Y, drawBounds.Width, drawBounds.Height / 2), Color.FromArgb(90, 255, 255, 255), Color.FromArgb(8, 255, 255, 255), LinearGradientMode.Vertical);
-        using var outerPen = new Pen(Color.FromArgb(140, accent), 3f);
-        using var innerPen = new Pen(Color.FromArgb(180, 210, 233, 255), 2f);
-        using var textBrush = new SolidBrush(Color.White);
-
-        g.FillPath(fillBrush, outerPath);
-        using (var glossPath = CreateRoundedRect(new Rectangle(drawBounds.X + 4, drawBounds.Y + 4, drawBounds.Width - 8, drawBounds.Height / 2), (drawBounds.Height / 2f) - 4f))
-        {
-            g.FillPath(glossBrush, glossPath);
-        }
-
-        g.DrawPath(outerPen, outerPath);
-        using (var innerPath = CreateRoundedRect(new Rectangle(drawBounds.X + 5, drawBounds.Y + 5, drawBounds.Width - 10, drawBounds.Height - 10), (drawBounds.Height - 10) / 2f))
-        {
-            g.DrawPath(innerPen, innerPath);
-        }
-
-        DrawCentered(g, label, font, textBrush, drawBounds.Left + drawBounds.Width / 2, drawBounds.Top + (int)ScaleY(16f));
+        return MenuRect(1590f, 30f, 44f, 44f);
     }
 
-    private Rectangle GetStartButtonBounds()
+    private void DrawMainMenuBackground(Graphics g, Rectangle bounds)
     {
-        int width = (int)ScaleX(365f);
-        int height = (int)ScaleY(94f);
-        int x = (int)ScaleX((DesignWidth - 365f) / 2f);
-        int y = (int)ScaleY(306f);
-        return new Rectangle(x, y, width, height);
+        using (var baseBrush = new LinearGradientBrush(bounds, Color.FromArgb(3, 6, 12), Color.FromArgb(8, 12, 26), LinearGradientMode.Vertical))
+            g.FillRectangle(baseBrush, bounds);
+
+        using (var vignette = new GraphicsPath())
+        {
+            vignette.AddEllipse(MenuX(-72f), MenuY(-84f), MenuS(1824f), MenuS(1094f));
+            using var shade = new PathGradientBrush(vignette)
+            {
+                CenterColor = Color.FromArgb(0, 0, 0, 0),
+                SurroundColors = [Color.FromArgb(128, 0, 0, 0)]
+            };
+            g.FillRectangle(shade, bounds);
+        }
+
+        using (var hazeBrush = new LinearGradientBrush(
+            MenuRect(0f, 780f, MainMenuDesignWidth, 118f),
+            Color.FromArgb(0, 20, 35, 80),
+            Color.FromArgb(60, 58, 70, 180),
+            LinearGradientMode.Vertical))
+        {
+            g.FillRectangle(hazeBrush, MenuX(0f), MenuY(780f), MenuS(MainMenuDesignWidth), MenuS(118f));
+        }
+
+        DrawMenuTexture(g, bounds);
+        DrawMenuBottomGlow(g);
+    }
+
+    private void DrawMenuTexture(Graphics g, Rectangle bounds)
+    {
+        using var verticalPen = new Pen(Color.FromArgb(7, 110, 130, 180), Math.Max(1f, MenuS(1f)));
+        for (float x = 34f; x < MainMenuDesignWidth; x += 64f)
+        {
+            float wobble = (float)Math.Sin(x * 0.09f) * MenuS(5f);
+            g.DrawLine(verticalPen, MenuX(x) + wobble, bounds.Top, MenuX(x - 18f), bounds.Bottom);
+        }
+
+        using var scratchPen = new Pen(Color.FromArgb(10, 220, 230, 255), Math.Max(1f, MenuS(1f)));
+        for (int i = 0; i < 42; i++)
+        {
+            float seed = i * 37.31f;
+            float x = MenuX((seed * 13f) % MainMenuDesignWidth);
+            float y = MenuY(90f + (seed * 7.7f) % 690f);
+            float length = MenuS(26f + (i % 5) * 14f);
+            g.DrawLine(scratchPen, x, y, x + MenuS((i % 3) - 1), y + length);
+        }
+    }
+
+    private void DrawMenuBottomGlow(Graphics g)
+    {
+        float y = MenuY(887f);
+        using var linePen = new Pen(Color.FromArgb(52, 70, 118, 210), Math.Max(1f, MenuS(1f)));
+        g.DrawLine(linePen, MenuX(86f), y, MenuX(1544f), y);
+
+        RectangleF glow = new(MenuX(610f), MenuY(846f), MenuS(460f), MenuS(92f));
+        using var path = new GraphicsPath();
+        path.AddEllipse(glow);
+        using var brush = new PathGradientBrush(path)
+        {
+            CenterColor = Color.FromArgb(136, 150, 115, 255),
+            SurroundColors = [Color.FromArgb(0, 44, 62, 170)]
+        };
+        g.FillPath(brush, path);
+
+        using var corePen = new Pen(Color.FromArgb(156, 255, 214, 170), Math.Max(1f, MenuS(1.2f)));
+        g.DrawLine(corePen, MenuX(724f), y, MenuX(956f), y);
+    }
+
+    private void DrawRhythmBrand(Graphics g, float x, float y, Font font, Brush brush)
+    {
+        using var pen = new Pen(Color.FromArgb(220, 232, 238, 252), Math.Max(1f, MenuS(1.5f)))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
+
+        float barX = x;
+        float barY = y + MenuS(3f);
+        float[] heights = [MenuS(22f), MenuS(34f), MenuS(48f), MenuS(34f), MenuS(22f)];
+        for (int i = 0; i < heights.Length; i++)
+        {
+            float bx = barX + MenuS(i * 7.2f);
+            g.DrawLine(pen, bx, barY + (MenuS(48f) - heights[i]) / 2f, bx, barY + (MenuS(48f) + heights[i]) / 2f);
+        }
+
+        DrawSpacedString(g, "RHYTHM GAME", font, brush, x + MenuS(52f), y + MenuS(11f), MenuS(8.6f), centered: false);
+    }
+
+    private void DrawGlowingSpacedText(Graphics g, string text, Font font, Brush brush, float centerX, float y, float spacing)
+    {
+        using var glowBrush = new SolidBrush(Color.FromArgb(52, 112, 150, 255));
+        for (int i = 5; i >= 1; i--)
+            DrawSpacedString(g, text, font, glowBrush, centerX + MenuS(i * 0.6f), y + MenuS(i * 0.2f), spacing, centered: true);
+
+        DrawSpacedString(g, text, font, brush, centerX, y, spacing, centered: true);
+    }
+
+    private void DrawMenuTagline(Graphics g, float centerX, float y, Font font, Brush brush, Color accent)
+    {
+        using var pen = new Pen(Color.FromArgb(170, accent), Math.Max(1f, MenuS(1.2f)));
+        g.DrawLine(pen, centerX - MenuS(264f), y + MenuS(11f), centerX - MenuS(198f), y + MenuS(11f));
+        g.DrawLine(pen, centerX + MenuS(198f), y + MenuS(11f), centerX + MenuS(264f), y + MenuS(11f));
+        DrawSpacedString(g, "FEEL THE BEAT", font, brush, centerX, y, MenuS(13f), centered: true);
+    }
+
+    private void DrawPlayMenuButton(Graphics g, Rectangle bounds, bool hovered, Font font, Color accent)
+    {
+        Rectangle drawBounds = bounds;
+        if (hovered)
+            drawBounds.Offset(0, -MenuMotionOffsetY(2f));
+
+        using var path = CreateRoundedRect(drawBounds, MenuS(7f));
+        using var fill = new LinearGradientBrush(drawBounds,
+            Color.FromArgb(hovered ? 38 : 24, 38, 52, 78),
+            Color.FromArgb(hovered ? 20 : 10, 4, 8, 18),
+            LinearGradientMode.Vertical);
+        using var border = new Pen(hovered ? Color.White : Color.FromArgb(235, 118, 184, 255), Math.Max(1.2f, MenuS(1.4f)));
+        using var glowPen = new Pen(Color.FromArgb(75, accent), Math.Max(5f, MenuS(6f)));
+        g.FillPath(fill, path);
+        g.DrawPath(glowPen, path);
+        g.DrawPath(border, path);
+
+        DrawPlayGlyph(g, new Rectangle(drawBounds.Left + (int)MenuS(68f), drawBounds.Top + (int)MenuS(34f), (int)MenuS(28f), (int)MenuS(32f)), Color.White);
+        using var textBrush = new SolidBrush(Color.FromArgb(238, 244, 255));
+        DrawSpacedString(g, "PLAY", font, textBrush, drawBounds.Left + drawBounds.Width / 2f, drawBounds.Top + MenuS(35f), MenuS(18f), centered: true);
+    }
+
+    private void DrawSecondaryMenuRow(Graphics g, Rectangle bounds, string text, bool hovered, Font font, Color accent, Action<Graphics, Rectangle, Color> drawIcon)
+    {
+        Rectangle drawBounds = bounds;
+        if (hovered)
+            drawBounds.Offset(0, -MenuMotionOffsetY(1f));
+
+        if (hovered)
+        {
+            using var hoverPath = CreateRoundedRect(drawBounds, MenuS(5f));
+            using var hoverBrush = new SolidBrush(Color.FromArgb(24, 80, 118, 170));
+            g.FillPath(hoverBrush, hoverPath);
+        }
+
+        Color color = hovered ? Color.White : Color.FromArgb(218, 224, 238);
+        Rectangle iconBounds = new(drawBounds.Left + (int)MenuS(26f), drawBounds.Top + (int)MenuS(15f), (int)MenuS(28f), (int)MenuS(30f));
+        drawIcon(g, iconBounds, color);
+
+        using var textBrush = new SolidBrush(color);
+        DrawSpacedString(g, text, font, textBrush, drawBounds.Left + MenuS(280f), drawBounds.Top + MenuS(13f), MenuS(12f), centered: true);
+    }
+
+    private void DrawSecondaryMenuDivider(Graphics g, float x, float y, float width)
+    {
+        using var pen = new Pen(Color.FromArgb(48, 210, 222, 255), Math.Max(1f, MenuS(1f)));
+        g.DrawLine(pen, x, y, x + width, y);
+    }
+
+    private void DrawMenuGearButton(Graphics g, Rectangle bounds, bool hovered, Color accent)
+    {
+        if (hovered)
+        {
+            using var glow = new SolidBrush(Color.FromArgb(28, accent));
+            g.FillEllipse(glow, Rectangle.Inflate(bounds, (int)MenuS(9f), (int)MenuS(9f)));
+        }
+
+        DrawOutlineGearGlyph(g, bounds, hovered ? Color.White : Color.FromArgb(230, 232, 238, 248));
+    }
+
+    private void DrawPlayerBadge(Graphics g, Font font, Brush textBrush, Brush accentBrush)
+    {
+        Rectangle icon = MenuRect(32f, 852f, 54f, 54f);
+        using var pen = new Pen(Color.FromArgb(170, 225, 232, 244), Math.Max(1f, MenuS(1f)));
+        g.DrawEllipse(pen, icon);
+        g.DrawEllipse(pen, icon.Left + MenuS(19f), icon.Top + MenuS(13f), MenuS(16f), MenuS(16f));
+        g.DrawArc(pen, icon.Left + MenuS(13f), icon.Top + MenuS(31f), MenuS(28f), MenuS(24f), 204f, 132f);
+
+        DrawSpacedString(g, "PLAYER", font, textBrush, MenuX(104f), MenuY(861f), MenuS(8f), centered: false);
+        g.DrawString("Lv. 1", font, accentBrush, MenuX(105f), MenuY(891f));
+    }
+
+    private void DrawQuitHint(Graphics g, Rectangle bounds, bool hovered, Font font, Brush textBrush)
+    {
+        Rectangle keyBounds = new(bounds.Left, bounds.Top, (int)MenuS(46f), (int)MenuS(28f));
+        using var keyPath = CreateRoundedRect(keyBounds, MenuS(4f));
+        using var keyFill = new SolidBrush(Color.FromArgb(hovered ? 46 : 24, 225, 232, 244));
+        using var keyPen = new Pen(Color.FromArgb(hovered ? 230 : 130, 225, 232, 244), Math.Max(1f, MenuS(1f)));
+        g.FillPath(keyFill, keyPath);
+        g.DrawPath(keyPen, keyPath);
+
+        using var keyBrush = new SolidBrush(Color.FromArgb(hovered ? 255 : 190, 225, 232, 244));
+        DrawCentered(g, "ESC", font, keyBrush, keyBounds.Left + keyBounds.Width / 2, keyBounds.Top + (int)MenuS(5f));
+        DrawSpacedString(g, "QUIT", font, textBrush, bounds.Left + MenuS(62f), bounds.Top + MenuS(6f), MenuS(8f), centered: false);
+    }
+
+    private static void DrawPlayGlyph(Graphics g, Rectangle bounds, Color color)
+    {
+        using var brush = new SolidBrush(color);
+        PointF[] points =
+        [
+            new(bounds.Left, bounds.Top),
+            new(bounds.Right, bounds.Top + bounds.Height / 2f),
+            new(bounds.Left, bounds.Bottom)
+        ];
+        g.FillPolygon(brush, points);
+    }
+
+    private static void DrawStatsGlyph(Graphics g, Rectangle bounds, Color color)
+    {
+        using var pen = new Pen(color, 1.7f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
+
+        float baseY = bounds.Bottom;
+        float barW = bounds.Width / 6f;
+        float[] heights = [bounds.Height * 0.42f, bounds.Height * 0.76f, bounds.Height * 0.56f];
+        for (int i = 0; i < heights.Length; i++)
+        {
+            float x = bounds.Left + bounds.Width * (0.18f + i * 0.27f);
+            g.DrawRectangle(pen, x, baseY - heights[i], barW, heights[i]);
+        }
+    }
+
+    private static void DrawSmallGearGlyph(Graphics g, Rectangle bounds, Color color)
+    {
+        DrawOutlineGearGlyph(g, bounds, color);
+    }
+
+    private static void DrawOutlineGearGlyph(Graphics g, Rectangle bounds, Color color)
+    {
+        float cx = bounds.Left + bounds.Width / 2f;
+        float cy = bounds.Top + bounds.Height / 2f;
+        float outer = Math.Min(bounds.Width, bounds.Height) * 0.36f;
+        float inner = outer * 0.44f;
+        using var pen = new Pen(color, Math.Max(1.4f, bounds.Width * 0.055f))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+
+        g.DrawEllipse(pen, cx - outer, cy - outer, outer * 2f, outer * 2f);
+        for (int i = 0; i < 8; i++)
+        {
+            double angle = i * Math.PI / 4.0;
+            float x1 = cx + (float)Math.Cos(angle) * (outer + bounds.Width * 0.04f);
+            float y1 = cy + (float)Math.Sin(angle) * (outer + bounds.Width * 0.04f);
+            float x2 = cx + (float)Math.Cos(angle) * (outer + bounds.Width * 0.18f);
+            float y2 = cy + (float)Math.Sin(angle) * (outer + bounds.Width * 0.18f);
+            g.DrawLine(pen, x1, y1, x2, y2);
+        }
+
+        g.DrawEllipse(pen, cx - inner, cy - inner, inner * 2f, inner * 2f);
+    }
+
+    private static void DrawSpacedString(Graphics g, string text, Font font, Brush brush, float x, float y, float spacing, bool centered)
+    {
+        float width = MeasureSpacedString(g, text, font, spacing);
+        float cursor = centered ? x - width / 2f : x;
+        foreach (char ch in text)
+        {
+            string part = ch.ToString();
+            g.DrawString(part, font, brush, cursor, y);
+            cursor += g.MeasureString(part, font).Width + spacing;
+        }
+    }
+
+    private static float MeasureSpacedString(Graphics g, string text, Font font, float spacing)
+    {
+        float width = 0f;
+        foreach (char ch in text)
+            width += g.MeasureString(ch.ToString(), font).Width + spacing;
+
+        return text.Length == 0 ? 0f : width - spacing;
     }
 
     private Rectangle GetExitButtonBounds()
     {
-        return GetMenuBottomButtonBounds(isRestart: false);
+        return MenuRect(1526f, 865f, 130f, 30f);
     }
 
     private Rectangle GetMenuBottomButtonBounds(bool isRestart)
     {
-        float width = 190f;
-        float height = 52f;
-        float gap = 22f;
-        float totalWidth = width * 2f + gap;
-        float startX = (DesignWidth - totalWidth) / 2f;
-        float x = isRestart ? startX + width + gap : startX;
-        float y = 538f;
-        return Rectangle.Round(new RectangleF(ScaleX(x), ScaleY(y), ScaleX(width), ScaleY(height)));
-    }
-
-    private Rectangle GetMenuCircleBounds(int index)
-    {
-        int diameter = (int)ScaleX(98f);
-        int spacing = (int)ScaleX(220f);
-        int centerY = (int)ScaleY(592f);
-        int centerX = (int)ScaleX(DesignWidth / 2f) + (index - 1) * spacing;
-        return new Rectangle(centerX - diameter / 2, centerY - diameter / 2, diameter, diameter);
+        return GetExitButtonBounds();
     }
 
     private Rectangle GetPlayAreaBounds()
     {
         float designPlayWidth = 560f;
-        float designMargin = 60f;
-        int scaledWidth = (int)Math.Min(designPlayWidth * _layoutScale, ClientSize.Width - 2 * designMargin * _layoutScale);
-        scaledWidth = Math.Max(scaledWidth, 200);
+        float safeMargin = Math.Max(16f, 28f * _layoutScale);
+        float minLaneWidth = LaneCount >= 7 ? 54f : LaneCount == 5 ? 60f : 68f;
+        float minPlayWidth = LaneCount * minLaneWidth;
+        float maxPlayWidth = Math.Max(minPlayWidth, ClientSize.Width - safeMargin * 2f);
+        int scaledWidth = (int)Math.Min(Math.Max(designPlayWidth * _layoutScale, minPlayWidth), maxPlayWidth);
         return new Rectangle((ClientSize.Width - scaledWidth) / 2, 0, scaledWidth, ClientSize.Height);
     }
 
@@ -1852,6 +3425,29 @@ public sealed partial class GameForm : Form
 
     private float ScaleY(float value) => value * _layoutScale;
 
+    private float ScaleTextY(float value) => value * _layoutScale * (_textScalePercent / 100f);
+
+    private int MotionOffsetY(float value) => _reducedMotionEnabled ? 0 : (int)ScaleY(value);
+
+    private float MainMenuScale => Math.Max(0.35f, Math.Min(ClientSize.Width / MainMenuDesignWidth, ClientSize.Height / MainMenuDesignHeight));
+
+    private float MainMenuOffsetX => (ClientSize.Width - MainMenuDesignWidth * MainMenuScale) / 2f - _layoutOffsetX;
+
+    private float MainMenuOffsetY => (ClientSize.Height - MainMenuDesignHeight * MainMenuScale) / 2f - _layoutOffsetY;
+
+    private float MenuS(float value) => value * MainMenuScale;
+
+    private float MenuX(float value) => MainMenuOffsetX + value * MainMenuScale;
+
+    private float MenuY(float value) => MainMenuOffsetY + value * MainMenuScale;
+
+    private Rectangle MenuRect(float x, float y, float width, float height)
+    {
+        return Rectangle.Round(new RectangleF(MenuX(x), MenuY(y), MenuS(width), MenuS(height)));
+    }
+
+    private int MenuMotionOffsetY(float value) => _reducedMotionEnabled ? 0 : (int)MenuS(value);
+
     private Point ToLogicalPoint(Point point)
     {
         return new Point(
@@ -1874,6 +3470,9 @@ public sealed partial class GameForm : Form
         _engine.AudioOffsetSeconds = _audioOffsetMs / 1000f;
 
         _audio.SetBgmVolume(_bgmVolume);
+        _audio.SetPreviewVolume(_previewVolume);
+        _audio.ConfigureHitSound(_hitSoundSkin, _hitSoundPitch, _hitSoundMuted);
+        _visualSkin = VisualSkin.Load(_visualSkinName);
         ApplyDisplayMode();
         ApplyFrameRate();
     }
@@ -1882,7 +3481,12 @@ public sealed partial class GameForm : Form
     {
         UserSettings settings = _settingsStore.Load();
         _bgmVolume = Math.Clamp(settings.BgmVolume, 0, 100);
+        _previewVolume = Math.Clamp(settings.PreviewVolume, 0, 100);
         _sfxVolume = Math.Clamp(settings.SfxVolume, 0, 100);
+        _hitSoundSkin = string.IsNullOrWhiteSpace(settings.HitSoundSkin) ? "SYNTH" : settings.HitSoundSkin;
+        _visualSkinName = string.IsNullOrWhiteSpace(settings.VisualSkin) ? VisualSkin.DefaultName : settings.VisualSkin;
+        _hitSoundPitch = Math.Clamp(settings.HitSoundPitch, -1, 1);
+        _hitSoundMuted = settings.HitSoundMuted;
         _themeColorIndex = Math.Clamp(settings.ThemeColorIndex, 0, ThemeColors.Length - 1);
         _laneBrightness = Math.Clamp(settings.LaneBrightness, 0, 100);
         _frameRateMode = Math.Clamp(settings.FrameRateMode, 0, FrameRateIntervals.Length - 1);
@@ -1890,11 +3494,14 @@ public sealed partial class GameForm : Form
         _darkModeEnabled = settings.DarkModeEnabled;
         _audioOffsetMs = Math.Clamp(settings.AudioOffsetMs, -150, 150);
         _laneModeIndex = Math.Clamp(settings.LaneModeIndex, 0, LaneModes.Length - 1);
+        LoadKeyBindingsFromSettings(settings);
         _splashDurationMs = Math.Clamp(settings.SplashDurationMs, 600, 5000);
         _highContrastEnabled = settings.HighContrastEnabled;
         _colorVisionMode = Math.Clamp(settings.ColorVisionMode, 0, ColorVisionLabels.Length - 1);
         _reducedMotionEnabled = settings.ReducedMotionEnabled;
+        _textScalePercent = Math.Clamp(settings.TextScalePercent <= 0 ? 100 : settings.TextScalePercent, 90, 140);
         _renderQualityMode = Math.Clamp(settings.RenderQualityMode, 0, RenderQualityLabels.Length - 1);
+        _playModeIndex = Math.Clamp(settings.PlayModeIndex, 0, PlayModeLabels.Length - 1);
     }
 
     private void SaveUserSettings()
@@ -1902,7 +3509,12 @@ public sealed partial class GameForm : Form
         _settingsStore.Save(new UserSettings
         {
             BgmVolume = _bgmVolume,
+            PreviewVolume = _previewVolume,
             SfxVolume = _sfxVolume,
+            HitSoundSkin = _hitSoundSkin,
+            VisualSkin = _visualSkinName,
+            HitSoundPitch = _hitSoundPitch,
+            HitSoundMuted = _hitSoundMuted,
             ThemeColorIndex = _themeColorIndex,
             LaneBrightness = _laneBrightness,
             FrameRateMode = _frameRateMode,
@@ -1910,11 +3522,16 @@ public sealed partial class GameForm : Form
             DarkModeEnabled = _darkModeEnabled,
             AudioOffsetMs = _audioOffsetMs,
             LaneModeIndex = _laneModeIndex,
+            KeyBindings4K = SerializeKeyBindings(0),
+            KeyBindings5K = SerializeKeyBindings(1),
+            KeyBindings7K = SerializeKeyBindings(2),
             SplashDurationMs = _splashDurationMs,
             HighContrastEnabled = _highContrastEnabled,
             ColorVisionMode = _colorVisionMode,
             ReducedMotionEnabled = _reducedMotionEnabled,
+            TextScalePercent = _textScalePercent,
             RenderQualityMode = _renderQualityMode,
+            PlayModeIndex = _playModeIndex,
         });
     }
 
@@ -1949,20 +3566,20 @@ public sealed partial class GameForm : Form
             }
             else
             {
-                if (FormBorderStyle == FormBorderStyle.Sizable && WindowState != FormWindowState.Maximized)
+                if (FormBorderStyle == FormBorderStyle.None && WindowState == FormWindowState.Normal)
                     return;
 
                 WindowState = FormWindowState.Normal;
-                FormBorderStyle = FormBorderStyle.Sizable;
+                FormBorderStyle = FormBorderStyle.None;
                 if (_windowedBounds != Rectangle.Empty)
                 {
                     Bounds = _windowedBounds;
                 }
-                else if (Width < 980 || Height < 700)
+                else if (Width < 980 || Height < 560)
                 {
                     var scr = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
-                    float fs = Math.Min(scr.Width * 0.75f / DesignWidth, scr.Height * 0.75f / DesignHeight);
-                    ClientSize = new Size(Math.Max((int)(DesignWidth * fs), 960), Math.Max((int)(DesignHeight * fs), 640));
+                    float fs = Math.Min(scr.Width * 0.75f / MainMenuDesignWidth, scr.Height * 0.75f / MainMenuDesignHeight);
+                    ClientSize = new Size(Math.Max((int)(MainMenuDesignWidth * fs), 960), Math.Max((int)(MainMenuDesignHeight * fs), 540));
                 }
             }
         }
@@ -2010,16 +3627,16 @@ public sealed partial class GameForm : Form
     private bool UseHighContrast => _highContrastEnabled || SystemInformation.HighContrast;
 
     // ── Dark Mode 색상 헬퍼 ──────────────────────────────────────────────────
-    private Color BgColor1 => UseHighContrast ? Color.Black : (_darkModeEnabled ? Color.FromArgb(24, 26, 33) : Color.FromArgb(250, 250, 252));
-    private Color BgColor2 => UseHighContrast ? Color.Black : (_darkModeEnabled ? Color.FromArgb(18, 20, 26) : Color.FromArgb(243, 244, 247));
-    private Color CardFill => UseHighContrast ? Color.Black : (_darkModeEnabled ? Color.FromArgb(36, 39, 48) : Color.FromArgb(252, 252, 253));
+    private Color BgColor1 => UseHighContrast ? Color.Black : Color.FromArgb(8, 12, 22);
+    private Color BgColor2 => UseHighContrast ? Color.Black : Color.FromArgb(18, 25, 42);
+    private Color CardFill => UseHighContrast ? Color.Black : Color.FromArgb(17, 25, 40);
     private Color CardBorder => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(58, 62, 72) : Color.FromArgb(221, 223, 228));
     private Color CardShadow => _darkModeEnabled ? Color.FromArgb(30, 0, 0, 0) : Color.FromArgb(15, 86, 95, 112);
-    private Color SeparatorColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(52, 56, 65) : Color.FromArgb(228, 230, 234));
-    private Color LabelColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(180, 185, 195) : Color.FromArgb(104, 109, 118));
-    private Color SubTextColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(140, 148, 165) : Color.FromArgb(125, 142, 175));
-    private Color PrimaryTextColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(220, 225, 235) : Color.FromArgb(43, 84, 158));
-    private Color SecondaryTextColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(160, 170, 185) : Color.FromArgb(108, 125, 156));
+    private Color SeparatorColor => UseHighContrast ? Color.White : Color.FromArgb(54, 68, 96);
+    private Color LabelColor => UseHighContrast ? Color.White : Color.FromArgb(170, 184, 212);
+    private Color SubTextColor => UseHighContrast ? Color.White : Color.FromArgb(134, 151, 184);
+    private Color PrimaryTextColor => UseHighContrast ? Color.White : Color.FromArgb(244, 248, 255);
+    private Color SecondaryTextColor => UseHighContrast ? Color.White : Color.FromArgb(155, 173, 205);
     private Color SliderTrackColor => UseHighContrast ? Color.White : (_darkModeEnabled ? Color.FromArgb(55, 60, 72) : Color.FromArgb(230, 232, 236));
     private Color ToggleOffColor => _darkModeEnabled ? Color.FromArgb(65, 70, 82) : Color.FromArgb(217, 220, 225);
     private Color SegmentBg => UseHighContrast ? Color.Black : (_darkModeEnabled ? Color.FromArgb(32, 36, 45) : Color.FromArgb(251, 251, 252));
@@ -2036,71 +3653,71 @@ public sealed partial class GameForm : Form
     private Color IconColor => _darkModeEnabled ? Color.FromArgb(120, 128, 145) : Color.FromArgb(128, 133, 143);
     private Color ThemeRingColor => _darkModeEnabled ? Color.FromArgb(70, 75, 88) : Color.FromArgb(221, 224, 230);
     private Color HazeTint => _darkModeEnabled ? Color.FromArgb(12, 80, 120, 200) : Color.FromArgb(28, 255, 255, 255);
-    private Color ClearColor => _darkModeEnabled ? Color.FromArgb(20, 22, 28) : Color.FromArgb(248, 249, 252);
-    private Color PanelFill1 => _darkModeEnabled ? Color.FromArgb(32, 36, 44) : Color.FromArgb(249, 250, 253);
-    private Color PanelBorder => _darkModeEnabled ? Color.FromArgb(52, 58, 70) : Color.FromArgb(205, 214, 228);
-    private Color PanelDivider => _darkModeEnabled ? Color.FromArgb(48, 54, 65) : Color.FromArgb(221, 226, 235);
-    private Color SearchFill1 => _darkModeEnabled ? Color.FromArgb(30, 34, 44) : Color.FromArgb(236, 240, 248);
-    private Color SearchFill2 => _darkModeEnabled ? Color.FromArgb(26, 30, 38) : Color.FromArgb(225, 230, 240);
-    private Color SearchBorder => _darkModeEnabled ? Color.FromArgb(50, 56, 68) : Color.FromArgb(207, 214, 227);
-    private Color SearchIconColor => _darkModeEnabled ? Color.FromArgb(100, 110, 130) : Color.FromArgb(160, 171, 193);
-    private Color SearchActiveText => _darkModeEnabled ? Color.FromArgb(180, 190, 210) : Color.FromArgb(94, 108, 138);
-    private Color TabFill1 => _darkModeEnabled ? Color.FromArgb(34, 38, 48) : Color.FromArgb(245, 248, 253);
-    private Color TabFill2 => _darkModeEnabled ? Color.FromArgb(28, 32, 40) : Color.FromArgb(232, 237, 246);
-    private Color TabBorder => _darkModeEnabled ? Color.FromArgb(50, 56, 68) : Color.FromArgb(182, 194, 215);
-    private Color TabText => _darkModeEnabled ? Color.FromArgb(130, 140, 160) : Color.FromArgb(122, 137, 164);
-    private Color SelectedRowFill1 => _darkModeEnabled ? Color.FromArgb(38, 48, 68) : Color.FromArgb(230, 239, 253);
-    private Color SelectedRowFill2 => _darkModeEnabled ? Color.FromArgb(32, 42, 60) : Color.FromArgb(215, 227, 246);
-    private Color SelectedRowBorder => _darkModeEnabled ? Color.FromArgb(55, 75, 110) : Color.FromArgb(173, 196, 233);
-    private Color RowCircleFill => _darkModeEnabled ? Color.FromArgb(42, 46, 58) : Color.FromArgb(238, 241, 247);
-    private Color RowCircleBorder => _darkModeEnabled ? Color.FromArgb(60, 66, 80) : Color.FromArgb(191, 201, 218);
-    private Color SelectedCircleFill => _darkModeEnabled ? Color.FromArgb(50, 42, 68) : Color.FromArgb(233, 224, 252);
-    private Color SelectedCircleBorder => _darkModeEnabled ? Color.FromArgb(80, 68, 110) : Color.FromArgb(187, 168, 228);
-    private Color ScrollTrackColor => _darkModeEnabled ? Color.FromArgb(40, 44, 55) : Color.FromArgb(227, 232, 240);
-    private Color ScrollHandleColor => _darkModeEnabled ? Color.FromArgb(70, 78, 95) : Color.FromArgb(184, 194, 211);
-    private Color DotColor => _darkModeEnabled ? Color.FromArgb(70, 78, 92) : Color.FromArgb(197, 204, 218);
-    private Color DotBorder => _darkModeEnabled ? Color.FromArgb(55, 62, 75) : Color.FromArgb(159, 170, 193);
-    private Color ArrowBtnFill1 => _darkModeEnabled ? Color.FromArgb(38, 42, 52) : Color.FromArgb(236, 240, 247);
-    private Color ArrowBtnFill2 => _darkModeEnabled ? Color.FromArgb(32, 36, 46) : Color.FromArgb(223, 230, 241);
-    private Color ArrowBtnBorder => _darkModeEnabled ? Color.FromArgb(55, 62, 75) : Color.FromArgb(175, 188, 209);
-    private Color ArrowColor => _darkModeEnabled ? Color.FromArgb(120, 132, 155) : Color.FromArgb(128, 145, 177);
-    private Color CloseBtnFill1 => _darkModeEnabled ? Color.FromArgb(38, 42, 52) : Color.FromArgb(238, 243, 251);
-    private Color CloseBtnFill2 => _darkModeEnabled ? Color.FromArgb(32, 36, 46) : Color.FromArgb(225, 232, 245);
-    private Color CloseBtnBorder => _darkModeEnabled ? Color.FromArgb(55, 62, 78) : Color.FromArgb(178, 192, 213);
-    private Color CloseBtnX => _darkModeEnabled ? Color.FromArgb(140, 155, 185) : Color.FromArgb(75, 112, 179);
-    private Color AchCardFill1 => _darkModeEnabled ? Color.FromArgb(34, 40, 52) : Color.FromArgb(248, 250, 253);
-    private Color AchCardFill2 => _darkModeEnabled ? Color.FromArgb(28, 34, 44) : Color.FromArgb(237, 242, 249);
-    private Color AchCardBorder => _darkModeEnabled ? Color.FromArgb(50, 58, 72) : Color.FromArgb(201, 212, 229);
-    private Color AchCardText => _darkModeEnabled ? Color.FromArgb(145, 170, 210) : Color.FromArgb(105, 139, 193);
-    private Color AchDotPen => _darkModeEnabled ? Color.FromArgb(80, 100, 135) : Color.FromArgb(160, 186, 214);
-    private Color ChevronColor => _darkModeEnabled ? Color.FromArgb(90, 115, 160) : Color.FromArgb(110, 143, 196);
+    private Color ClearColor => Color.FromArgb(8, 12, 22);
+    private Color PanelFill1 => UseHighContrast ? Color.Black : Color.FromArgb(17, 25, 40);
+    private Color PanelBorder => UseHighContrast ? Color.White : Color.FromArgb(72, 100, 150);
+    private Color PanelDivider => UseHighContrast ? Color.White : Color.FromArgb(45, 59, 86);
+    private Color SearchFill1 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(30, 34, 44) : Color.FromArgb(236, 240, 248);
+    private Color SearchFill2 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(26, 30, 38) : Color.FromArgb(225, 230, 240);
+    private Color SearchBorder => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(50, 56, 68) : Color.FromArgb(207, 214, 227);
+    private Color SearchIconColor => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(100, 110, 130) : Color.FromArgb(160, 171, 193);
+    private Color SearchActiveText => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(180, 190, 210) : Color.FromArgb(94, 108, 138);
+    private Color TabFill1 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(34, 38, 48) : Color.FromArgb(245, 248, 253);
+    private Color TabFill2 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(28, 32, 40) : Color.FromArgb(232, 237, 246);
+    private Color TabBorder => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(50, 56, 68) : Color.FromArgb(182, 194, 215);
+    private Color TabText => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(130, 140, 160) : Color.FromArgb(122, 137, 164);
+    private Color SelectedRowFill1 => UseHighContrast ? Color.FromArgb(40, 40, 40) : _darkModeEnabled ? Color.FromArgb(38, 48, 68) : Color.FromArgb(230, 239, 253);
+    private Color SelectedRowFill2 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(32, 42, 60) : Color.FromArgb(215, 227, 246);
+    private Color SelectedRowBorder => UseHighContrast ? Color.FromArgb(255, 230, 0) : _darkModeEnabled ? Color.FromArgb(55, 75, 110) : Color.FromArgb(173, 196, 233);
+    private Color RowCircleFill => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(42, 46, 58) : Color.FromArgb(238, 241, 247);
+    private Color RowCircleBorder => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(60, 66, 80) : Color.FromArgb(191, 201, 218);
+    private Color SelectedCircleFill => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(50, 42, 68) : Color.FromArgb(233, 224, 252);
+    private Color SelectedCircleBorder => UseHighContrast ? Color.FromArgb(255, 230, 0) : _darkModeEnabled ? Color.FromArgb(80, 68, 110) : Color.FromArgb(187, 168, 228);
+    private Color ScrollTrackColor => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(40, 44, 55) : Color.FromArgb(227, 232, 240);
+    private Color ScrollHandleColor => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(70, 78, 95) : Color.FromArgb(184, 194, 211);
+    private Color DotColor => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(70, 78, 92) : Color.FromArgb(197, 204, 218);
+    private Color DotBorder => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(55, 62, 75) : Color.FromArgb(159, 170, 193);
+    private Color ArrowBtnFill1 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(38, 42, 52) : Color.FromArgb(236, 240, 247);
+    private Color ArrowBtnFill2 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(32, 36, 46) : Color.FromArgb(223, 230, 241);
+    private Color ArrowBtnBorder => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(55, 62, 75) : Color.FromArgb(175, 188, 209);
+    private Color ArrowColor => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(120, 132, 155) : Color.FromArgb(128, 145, 177);
+    private Color CloseBtnFill1 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(38, 42, 52) : Color.FromArgb(238, 243, 251);
+    private Color CloseBtnFill2 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(32, 36, 46) : Color.FromArgb(225, 232, 245);
+    private Color CloseBtnBorder => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(55, 62, 78) : Color.FromArgb(178, 192, 213);
+    private Color CloseBtnX => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(140, 155, 185) : Color.FromArgb(75, 112, 179);
+    private Color AchCardFill1 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(34, 40, 52) : Color.FromArgb(248, 250, 253);
+    private Color AchCardFill2 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(28, 34, 44) : Color.FromArgb(237, 242, 249);
+    private Color AchCardBorder => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(50, 58, 72) : Color.FromArgb(201, 212, 229);
+    private Color AchCardText => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(145, 170, 210) : Color.FromArgb(105, 139, 193);
+    private Color AchDotPen => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(80, 100, 135) : Color.FromArgb(160, 186, 214);
+    private Color ChevronColor => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(90, 115, 160) : Color.FromArgb(110, 143, 196);
     private Color ExitBtnFill1 => _darkModeEnabled ? Color.FromArgb(34, 38, 48) : Color.FromArgb(250, 252, 255);
     private Color ExitBtnFill2 => _darkModeEnabled ? Color.FromArgb(28, 32, 42) : Color.FromArgb(237, 243, 252);
     private Color ExitBtnHoverFill1 => _darkModeEnabled ? Color.FromArgb(38, 42, 54) : Color.FromArgb(242, 247, 255);
     private Color ExitBtnHoverFill2 => _darkModeEnabled ? Color.FromArgb(32, 36, 48) : Color.FromArgb(223, 233, 248);
-    private Color AnalyzeBg1 => _darkModeEnabled ? Color.FromArgb(22, 26, 38) : Color.FromArgb(235, 240, 252);
-    private Color AnalyzeBg2 => _darkModeEnabled ? Color.FromArgb(16, 20, 30) : Color.FromArgb(218, 228, 248);
-    private Color AnalyzeTitle => _darkModeEnabled ? Color.FromArgb(140, 165, 220) : Color.FromArgb(72, 96, 168);
-    private Color AnalyzePanelFill1 => _darkModeEnabled ? Color.FromArgb(32, 36, 48) : Color.FromArgb(252, 253, 255);
-    private Color AnalyzePanelFill2 => _darkModeEnabled ? Color.FromArgb(26, 30, 40) : Color.FromArgb(238, 243, 253);
-    private Color AnalyzePanelBorder => _darkModeEnabled ? Color.FromArgb(48, 55, 72) : Color.FromArgb(195, 210, 235);
-    private Color AnalyzeRowAlt1 => _darkModeEnabled ? Color.FromArgb(30, 35, 48) : Color.FromArgb(240, 244, 252);
-    private Color AnalyzeRowAlt2 => _darkModeEnabled ? Color.FromArgb(34, 40, 52) : Color.FromArgb(246, 248, 254);
-    private Color AnalyzeRowBorder => _darkModeEnabled ? Color.FromArgb(48, 55, 70) : Color.FromArgb(210, 220, 238);
-    private Color AnalyzeLabelColor => _darkModeEnabled ? Color.FromArgb(160, 175, 210) : Color.FromArgb(55, 75, 130);
-    private Color AnalyzeValueColor => _darkModeEnabled ? Color.FromArgb(140, 165, 215) : Color.FromArgb(60, 85, 150);
-    private Color AnalyzeSongTitle => _darkModeEnabled ? Color.FromArgb(170, 185, 220) : Color.FromArgb(50, 70, 120);
-    private Color AnalyzeSongArtist => _darkModeEnabled ? Color.FromArgb(130, 150, 185) : Color.FromArgb(120, 140, 175);
-    private Color AnalyzeStatLabel => _darkModeEnabled ? Color.FromArgb(140, 160, 200) : Color.FromArgb(100, 120, 160);
-    private Color AnalyzeStatValue => _darkModeEnabled ? Color.FromArgb(160, 175, 215) : Color.FromArgb(55, 75, 135);
-    private Color AchDetailTabFill1 => _darkModeEnabled ? Color.FromArgb(34, 38, 48) : Color.FromArgb(246, 249, 253);
-    private Color AchDetailTabFill2 => _darkModeEnabled ? Color.FromArgb(28, 32, 40) : Color.FromArgb(229, 237, 248);
-    private Color AchDetailTabBorder => _darkModeEnabled ? Color.FromArgb(48, 55, 68) : Color.FromArgb(200, 214, 232);
-    private Color AchDetailSelectedFill => _darkModeEnabled ? Color.FromArgb(42, 48, 60) : Color.FromArgb(255, 255, 255);
-    private Color AchDetailSelectedFill2 => _darkModeEnabled ? Color.FromArgb(36, 42, 54) : Color.FromArgb(242, 247, 253);
-    private Color AchDetailSelectedBorder => _darkModeEnabled ? Color.FromArgb(58, 68, 85) : Color.FromArgb(210, 223, 238);
-    private Color AchDetailSelectedText => _darkModeEnabled ? Color.FromArgb(145, 170, 210) : Color.FromArgb(98, 130, 184);
-    private Color AchDetailUnselectedText => _darkModeEnabled ? Color.FromArgb(110, 130, 160) : Color.FromArgb(142, 165, 193);
+    private Color AnalyzeBg1 => UseHighContrast ? Color.Black : Color.FromArgb(8, 12, 22);
+    private Color AnalyzeBg2 => UseHighContrast ? Color.Black : Color.FromArgb(18, 25, 42);
+    private Color AnalyzeTitle => UseHighContrast ? Color.White : Color.FromArgb(235, 245, 255);
+    private Color AnalyzePanelFill1 => UseHighContrast ? Color.Black : Color.FromArgb(18, 26, 42);
+    private Color AnalyzePanelFill2 => UseHighContrast ? Color.Black : Color.FromArgb(12, 19, 33);
+    private Color AnalyzePanelBorder => UseHighContrast ? Color.White : Color.FromArgb(72, 100, 150);
+    private Color AnalyzeRowAlt1 => UseHighContrast ? Color.Black : Color.FromArgb(20, 30, 48);
+    private Color AnalyzeRowAlt2 => UseHighContrast ? Color.FromArgb(20, 20, 20) : Color.FromArgb(15, 23, 38);
+    private Color AnalyzeRowBorder => UseHighContrast ? Color.White : Color.FromArgb(44, 60, 88);
+    private Color AnalyzeLabelColor => UseHighContrast ? Color.White : Color.FromArgb(170, 188, 220);
+    private Color AnalyzeValueColor => UseHighContrast ? Color.White : Color.FromArgb(235, 245, 255);
+    private Color AnalyzeSongTitle => UseHighContrast ? Color.White : Color.FromArgb(240, 248, 255);
+    private Color AnalyzeSongArtist => UseHighContrast ? Color.White : Color.FromArgb(150, 170, 205);
+    private Color AnalyzeStatLabel => UseHighContrast ? Color.White : Color.FromArgb(145, 165, 200);
+    private Color AnalyzeStatValue => UseHighContrast ? Color.White : Color.FromArgb(235, 245, 255);
+    private Color AchDetailTabFill1 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(34, 38, 48) : Color.FromArgb(246, 249, 253);
+    private Color AchDetailTabFill2 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(28, 32, 40) : Color.FromArgb(229, 237, 248);
+    private Color AchDetailTabBorder => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(48, 55, 68) : Color.FromArgb(200, 214, 232);
+    private Color AchDetailSelectedFill => UseHighContrast ? Color.FromArgb(35, 35, 35) : _darkModeEnabled ? Color.FromArgb(42, 48, 60) : Color.FromArgb(255, 255, 255);
+    private Color AchDetailSelectedFill2 => UseHighContrast ? Color.Black : _darkModeEnabled ? Color.FromArgb(36, 42, 54) : Color.FromArgb(242, 247, 253);
+    private Color AchDetailSelectedBorder => UseHighContrast ? Color.FromArgb(255, 230, 0) : _darkModeEnabled ? Color.FromArgb(58, 68, 85) : Color.FromArgb(210, 223, 238);
+    private Color AchDetailSelectedText => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(145, 170, 210) : Color.FromArgb(98, 130, 184);
+    private Color AchDetailUnselectedText => UseHighContrast ? Color.White : _darkModeEnabled ? Color.FromArgb(110, 130, 160) : Color.FromArgb(142, 165, 193);
 
     private void DrawExitButton(Graphics g, Rectangle bounds, bool hovered, Font font)
     {
@@ -2116,7 +3733,7 @@ public sealed partial class GameForm : Form
 
         var drawBounds = bounds;
         if (hovered)
-            drawBounds.Offset(0, -(int)ScaleY(2f));
+            drawBounds.Offset(0, -MotionOffsetY(2f));
 
         using var outerPath = CreateRoundedRect(drawBounds, drawBounds.Height / 2f);
         using var fillBrush = new LinearGradientBrush(
@@ -2310,7 +3927,10 @@ public sealed partial class GameForm : Form
         if (disposing)
         {
             _timer.Dispose();
+            _splashTimer.Dispose();
             _audio.Dispose();
+            _renderResources.Dispose();
+            _gameBgaImage?.Dispose();
         }
         base.Dispose(disposing);
     }

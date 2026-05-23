@@ -3,9 +3,10 @@ namespace RhythmGame;
 public sealed partial class GameForm
 {
     private float _speedMultiplier = 1.0f;
-    private const float SpeedMin = 0.5f;
+    private const float SpeedMin = 0.1f;
     private const float SpeedMax = 5.0f;
     private const float SpeedStep = 0.1f;
+    private const float EngineSpeedScale = 4.0f;
 
     private void IncreaseSpeed()
     {
@@ -21,7 +22,7 @@ public sealed partial class GameForm
 
     private void ApplySpeedToEngine()
     {
-        _engine.NoteSpeedMultiplier = _speedMultiplier;
+        _engine.NoteSpeedMultiplier = _speedMultiplier * EngineSpeedScale;
     }
 
     private static readonly SolidBrush _indicatorBgBrush = new(Color.FromArgb(180, 20, 22, 35));

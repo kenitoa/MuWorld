@@ -20,6 +20,7 @@ internal enum SettingsSlider
     None,
     Bgm,
     Sfx,
+    AudioOffset,
     LaneBrightness
 }
 
@@ -68,6 +69,7 @@ public sealed partial class GameForm : Form
     private DisplayMode _displayMode;
     private readonly AudioManager _audio = new();
     private readonly AchievementProgressStore _achievementStore = new();
+    private readonly UserSettingsStore _settingsStore = new();
     private readonly Random _uiRandom = new();
     private bool _isCountdownActive;
     private DateTime _countdownStartTime;
@@ -99,6 +101,7 @@ public sealed partial class GameForm : Form
 
     private int _bgmVolume = 80;
     private int _sfxVolume = 60;
+    private int _audioOffsetMs;
     private int _themeColorIndex;
     private int _laneBrightness = 70;
     private int _frameRateMode = 2; // 0=30, 1=60, 2=120, 3=144, 4=240
@@ -257,6 +260,7 @@ public sealed partial class GameForm : Form
         MouseUp += OnMenuMouseUp;
         Resize += OnGameFormResize;
 
+        LoadUserSettings();
         UpdateLayoutMetrics();
         ApplySettingsToRuntime();
         _playerProgress = _achievementStore.Load();
@@ -275,9 +279,8 @@ public sealed partial class GameForm : Form
         if (song is null)
             return;
 
-        string wavPath = Path.Combine(AppContext.BaseDirectory, "Songs", "InGameBGM", "Original", song.Title + ".wav");
-        if (File.Exists(wavPath))
-            _audio.PlayInGameBgm(wavPath);
+        if (File.Exists(song.FilePath))
+            _audio.PlayInGameBgm(song.FilePath);
     }
 
     // ── 게임 루프 ─────────────────────────────────────────────────────────────
@@ -434,14 +437,13 @@ public sealed partial class GameForm : Form
             e.SuppressKeyPress = true;
             if (_lanePressed[i]) break;   // 키 반복 방지
             _lanePressed[i] = true;
-            string? fb = _engine.TryHit(i);
-            if (fb is not null)
+            GameEngine.HitResult? hit = _engine.TryHit(i);
+            if (hit is not null)
             {
-                _feedback = fb;
+                _feedback = hit.Value.Label;
                 _feedbackTime = DateTime.Now;
 
-                bool isPerfectOrGreat = fb[0] is 'P' or 'G' && fb[^1] == '!';
-                _audio.PlayHit(_sfxVolume, isPerfectOrGreat, _audio.IsInGameBgmPlaying);
+                _audio.PlayHit(_sfxVolume, hit.Value.Judgment, _audio.IsInGameBgmPlaying);
             }
             // Invalidate()는 타이머(~8ms)가 이미 매 프레임 호출하므로 생략
             break;
@@ -1620,10 +1622,39 @@ public sealed partial class GameForm : Form
     private void ApplySettingsToRuntime()
     {
         _engine.NoteSpeedMultiplier = _speedMultiplier;
+        _engine.AudioOffsetSeconds = _audioOffsetMs / 1000f;
 
         _audio.SetBgmVolume(_bgmVolume);
         ApplyDisplayMode();
         ApplyFrameRate();
+    }
+
+    private void LoadUserSettings()
+    {
+        UserSettings settings = _settingsStore.Load();
+        _bgmVolume = Math.Clamp(settings.BgmVolume, 0, 100);
+        _sfxVolume = Math.Clamp(settings.SfxVolume, 0, 100);
+        _themeColorIndex = Math.Clamp(settings.ThemeColorIndex, 0, ThemeColors.Length - 1);
+        _laneBrightness = Math.Clamp(settings.LaneBrightness, 0, 100);
+        _frameRateMode = Math.Clamp(settings.FrameRateMode, 0, FrameRateIntervals.Length - 1);
+        _vsyncEnabled = settings.VSyncEnabled;
+        _darkModeEnabled = settings.DarkModeEnabled;
+        _audioOffsetMs = Math.Clamp(settings.AudioOffsetMs, -150, 150);
+    }
+
+    private void SaveUserSettings()
+    {
+        _settingsStore.Save(new UserSettings
+        {
+            BgmVolume = _bgmVolume,
+            SfxVolume = _sfxVolume,
+            ThemeColorIndex = _themeColorIndex,
+            LaneBrightness = _laneBrightness,
+            FrameRateMode = _frameRateMode,
+            VSyncEnabled = _vsyncEnabled,
+            DarkModeEnabled = _darkModeEnabled,
+            AudioOffsetMs = _audioOffsetMs,
+        });
     }
 
     private void ApplyFrameRate()

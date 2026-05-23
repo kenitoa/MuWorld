@@ -10,7 +10,8 @@ internal static class ChartGenerator
     private const string ChartFolderName = "NoteLane";
 
     /// <summary>
-    /// Songs/InGameBGM 폴더의 모든 WAV 파일을 분석하여 채보를 생성한다.
+    /// Songs/InGameBGM 폴더의 오디오 파일을 분석하여 채보를 생성한다.
+    /// 현재 자동 분석은 WAV PCM 파일만 지원한다.
     /// 이미 생성된 채보가 있으면 건너뛴다.
     /// </summary>
     public static void GenerateAllCharts()
@@ -22,11 +23,17 @@ internal static class ChartGenerator
         string chartDir = Path.Combine(AppContext.BaseDirectory, ChartFolderName);
         Directory.CreateDirectory(chartDir);
 
-        string[] wavFiles = Directory.GetFiles(bgmDir, "*.wav", SearchOption.TopDirectoryOnly);
+        string[] audioFiles = AudioFileCatalog.DiscoverSongFiles(bgmDir);
 
-        foreach (string wavPath in wavFiles)
+        foreach (string audioPath in audioFiles)
         {
-            string songName = Path.GetFileNameWithoutExtension(wavPath);
+            if (!AudioFileCatalog.IsWav(audioPath))
+            {
+                Console.WriteLine($"Chart skipped: {Path.GetFileName(audioPath)} requires WAV PCM analysis support.");
+                continue;
+            }
+
+            string songName = Path.GetFileNameWithoutExtension(audioPath);
 
             for (int difficulty = 0; difficulty < 3; difficulty++)
             {
@@ -35,7 +42,7 @@ internal static class ChartGenerator
                 if (File.Exists(chartFile))
                     continue;
 
-                var beats = WavAnalyzer.Analyze(wavPath);
+                var beats = WavAnalyzer.Analyze(audioPath);
                 if (beats.Count == 0)
                     continue;
 

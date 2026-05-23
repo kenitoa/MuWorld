@@ -249,8 +249,8 @@ Progress는 `%LOCALAPPDATA%/RhythmGame/player_progress.json`에 JSON으로 Persi
 - **Multiplayer Mode**: 로컬 또는 네트워크 대전
 - **Skin / Theme Customization**: Note, Background, Hit Effect 등 시각 요소 커스텀
 - **Chart Editor**: 유저가 직접 채보를 만들고 편집하는 에디터
-- **OGG / MP3 Format 지원**: 현재 WAV 전용인 Audio Input을 다양한 Format으로 확장
-- **Offset Calibration**: Audio-Visual Sync를 유저가 미세 조정할 수 있는 설정
+- **비-WAV 자동 분석 지원**: MP3 / OGG / FLAC을 채보 생성용 PCM 데이터로 변환하는 Decode Pipeline
+- **Offset Calibration 자동화**: Audio-Visual Sync를 클릭음 테스트로 보정하는 캘리브레이션 화면
 - **BGA (Background Animation)**: 게임 플레이 중 배경 영상 재생
 - **Combo / Judgment Hit Effect Animation**: 판정 시 파티클이나 애니메이션 연출
 - **Accuracy / Rate 표시**: 전체 정확도를 백분율이나 Grade (S, A, B 등)로 표시
@@ -260,12 +260,6 @@ Progress는 `%LOCALAPPDATA%/RhythmGame/player_progress.json`에 JSON으로 Persi
 ---
 
 ## 현재 버전의 구현하지 못한 점
-
-### Audio 관련
-- **WAV Format만 지원**: MP3, OGG, FLAC 등은 입력 불가
-- **Synthetic BGM Legacy Code 잔존**: `AudioManager.RestartBgmCore()` 에 사용하지 않는 합성 BGM 코드가 남아있음
-- **Hit Sound Variety 부족**: Perfect / Good 두 종류의 SFX만 존재, Judgment별 차별화 미흡
-- **Audio Latency 보정 없음**: 시스템별 Audio Output Delay에 대한 Offset 보정 기능 미구현
 
 ### Gameplay 관련
 - **Lane 수 고정 (4 Lane)**: 5K, 7K 등 다른 Key 모드 미지원

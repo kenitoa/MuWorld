@@ -15,6 +15,7 @@ public class GameEngine
     public ScoreManager Score     { get; } = new();
     public bool         IsRunning { get; private set; }
     public float        NoteSpeedMultiplier { get; set; } = 1f;
+    public float        AudioOffsetSeconds { get; set; }
 
     private float         _noteSpeed     = 280f;
     private float         _spawnTimer    = 0f;
@@ -96,7 +97,7 @@ public class GameEngine
             var note = Notes[i];
             if (note.State == NoteState.Active)
             {
-                float remainingTime = note.TargetTime - _chartTime;
+                float remainingTime = note.TargetTime - GetSyncedChartTime();
                 note.Y = hitCenterY - (Note.Height / 2f) - remainingTime * _noteSpeed;
 
                 // 시간 기반 Miss 판정: 노트 TargetTime을 MissThreshold 이상 지나면 Miss
@@ -118,14 +119,17 @@ public class GameEngine
     // ── 판정 결과 (문자열 할당 방지용 상수) ──────────────────────────────────────
     private static readonly string[] JudgmentLabels = ["PERFECT!", "GREAT!", "BETTER", "GOOD", "BAD"];
 
+    public readonly record struct HitResult(Judgment Judgment, string Label);
+
     // ── 키 입력 판정 (시간 기반) ──────────────────────────────────────────────
-    /// <returns>판정 문자열("PERFECT!" / "GOOD"), 범위 밖이면 null</returns>
-    public string? TryHit(int lane)
+    /// <returns>판정 결과, 범위 밖이면 null</returns>
+    public HitResult? TryHit(int lane)
     {
         if (!IsRunning) return null;
 
         Note? best = null;
         float bestTimeDiff = BadWindow + 0.001f; // BadWindow 이내만 탐색
+        float syncedChartTime = GetSyncedChartTime();
 
         for (int i = 0; i < Notes.Count; i++)
         {
@@ -133,7 +137,7 @@ public class GameEngine
             if (note.State != NoteState.Active) continue;
             if (note.Lane != lane) continue;
 
-            float timeDiff = MathF.Abs(_chartTime - note.TargetTime);
+            float timeDiff = MathF.Abs(syncedChartTime - note.TargetTime);
 
             // BadWindow 밖이면 스킵
             if (timeDiff > BadWindow) continue;
@@ -158,7 +162,7 @@ public class GameEngine
         else                                    j = Judgment.Bad;
 
         Score.AddHit(j);
-        return JudgmentLabels[(int)j];
+        return new HitResult(j, JudgmentLabels[(int)j]);
     }
 
     // ── 노트 생성 ─────────────────────────────────────────────────────────────
@@ -169,12 +173,17 @@ public class GameEngine
         return travelDistance / Math.Max(1f, _noteSpeed);
     }
 
+    private float GetSyncedChartTime()
+    {
+        return _chartTime - AudioOffsetSeconds;
+    }
+
     private void SpawnChartNotes()
     {
         while (_nextChartNoteIndex < _chartNotes.Count)
         {
             LaneNote chartNote = _chartNotes[_nextChartNoteIndex];
-            if (chartNote.Time > _chartTime + _spawnLeadTime)
+            if (chartNote.Time > GetSyncedChartTime() + _spawnLeadTime)
                 break;
 
             if (chartNote.Lane is >= 0 and < 4)
@@ -201,7 +210,7 @@ public class GameEngine
             (_laneShuffle[i], _laneShuffle[j]) = (_laneShuffle[j], _laneShuffle[i]);
         }
 
-        float targetTime = _chartTime + _spawnLeadTime;
+        float targetTime = GetSyncedChartTime() + _spawnLeadTime;
         for (int i = 0; i < count; i++)
         {
             var note = new Note(_laneShuffle[i]) { TargetTime = targetTime };

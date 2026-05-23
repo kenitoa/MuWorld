@@ -6,7 +6,7 @@ public sealed partial class GameForm
 {
     private const int SongRowsPerPage = 5;
 
-    private sealed record SongEntry(string Title, string Artist, int ArtworkStyle);
+    private sealed record SongEntry(string Title, string Artist, int ArtworkStyle, string FilePath);
 
     private static SongEntry[]? _cachedSongList;
 
@@ -22,14 +22,14 @@ public sealed partial class GameForm
             return _cachedSongList;
         }
 
-        string[] wavFiles = Directory.GetFiles(bgmDir, "*.wav", SearchOption.TopDirectoryOnly);
-        Array.Sort(wavFiles, StringComparer.OrdinalIgnoreCase);
+        string[] audioFiles = AudioFileCatalog.DiscoverSongFiles(bgmDir);
 
-        var songs = new SongEntry[wavFiles.Length];
-        for (int i = 0; i < wavFiles.Length; i++)
+        var songs = new SongEntry[audioFiles.Length];
+        for (int i = 0; i < audioFiles.Length; i++)
         {
-            string name = Path.GetFileNameWithoutExtension(wavFiles[i]);
-            songs[i] = new SongEntry(name, "InGameBGM", i % 6);
+            string name = Path.GetFileNameWithoutExtension(audioFiles[i]);
+            string artist = $"InGameBGM · {AudioFileCatalog.GetFormatLabel(audioFiles[i])}";
+            songs[i] = new SongEntry(name, artist, i % 6, audioFiles[i]);
         }
 
         _cachedSongList = songs;

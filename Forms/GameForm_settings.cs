@@ -34,18 +34,22 @@ public sealed partial class GameForm
         DrawCard(g, soundPanel);
         DrawCard(g, visualPanel);
 
-        DrawPanelSeparators(g, soundPanel, 2);
+        DrawPanelSeparators(g, soundPanel, 3);
         DrawPanelSeparators(g, visualPanel, 6);
 
         using var subBrush = new SolidBrush(LabelColor);
 
-        DrawLeftCentered(g, "BGM VOLUME", labelFont, subBrush, GetRowLabelX(soundPanel), GetRowCenterY(soundPanel, 0, 2));
-        DrawSoundIcon(g, GetRowIconBounds(soundPanel, 0, 2), IconColor);
+        DrawLeftCentered(g, "BGM VOLUME", labelFont, subBrush, GetRowLabelX(soundPanel), GetRowCenterY(soundPanel, 0, 3));
+        DrawSoundIcon(g, GetRowIconBounds(soundPanel, 0, 3), IconColor);
         DrawSlider(g, SettingsSlider.Bgm, GetSliderTrackBounds(SettingsSlider.Bgm), _bgmVolume, $"{_bgmVolume}%");
 
-        DrawLeftCentered(g, "SFX VOLUME", labelFont, subBrush, GetRowLabelX(soundPanel), GetRowCenterY(soundPanel, 1, 2));
-        DrawSoundIcon(g, GetRowIconBounds(soundPanel, 1, 2), IconColor);
+        DrawLeftCentered(g, "SFX VOLUME", labelFont, subBrush, GetRowLabelX(soundPanel), GetRowCenterY(soundPanel, 1, 3));
+        DrawSoundIcon(g, GetRowIconBounds(soundPanel, 1, 3), IconColor);
         DrawSlider(g, SettingsSlider.Sfx, GetSliderTrackBounds(SettingsSlider.Sfx), _sfxVolume, $"{_sfxVolume}%");
+
+        DrawLeftCentered(g, "AUDIO OFFSET", labelFont, subBrush, GetRowLabelX(soundPanel), GetRowCenterY(soundPanel, 2, 3));
+        DrawSoundIcon(g, GetRowIconBounds(soundPanel, 2, 3), IconColor);
+        DrawSlider(g, SettingsSlider.AudioOffset, GetSliderTrackBounds(SettingsSlider.AudioOffset), _audioOffsetMs, $"{_audioOffsetMs:+0;-0;0} ms");
 
         DrawLeftCentered(g, "DISPLAY MODE", labelFont, subBrush, GetRowLabelX(visualPanel), GetRowCenterY(visualPanel, 0, 6));
         DrawMonitorIcon(g, GetRowIconBounds(visualPanel, 0, 6), IconColor);
@@ -81,17 +85,17 @@ public sealed partial class GameForm
 
     private Rectangle GetSoundPanelBounds()
     {
-        return GetCenteredDesignRect(846f, 116f, 138f);
+        return GetCenteredDesignRect(846f, 174f, 122f);
     }
 
     private Rectangle GetVisualPanelBounds()
     {
-        return GetCenteredDesignRect(846f, 282f, 266f);
+        return GetCenteredDesignRect(846f, 282f, 318f);
     }
 
     private Rectangle GetResetButtonBounds()
     {
-        return GetCenteredDesignRect(278f, 42f, 742f);
+        return GetCenteredDesignRect(278f, 42f, 710f);
     }
 
     private Rectangle GetCenteredDesignRect(float designWidth, float designHeight, float designY)
@@ -126,8 +130,9 @@ public sealed partial class GameForm
         int rowCount = slider == SettingsSlider.LaneBrightness ? 5 : 2;
         float y = slider switch
         {
-            SettingsSlider.Bgm => GetRowCenterY(panelBounds, 0, 2) - ScaleY(4f),
-            SettingsSlider.Sfx => GetRowCenterY(panelBounds, 1, 2) - ScaleY(4f),
+            SettingsSlider.Bgm => GetRowCenterY(panelBounds, 0, 3) - ScaleY(4f),
+            SettingsSlider.Sfx => GetRowCenterY(panelBounds, 1, 3) - ScaleY(4f),
+            SettingsSlider.AudioOffset => GetRowCenterY(panelBounds, 2, 3) - ScaleY(4f),
             SettingsSlider.LaneBrightness => GetRowCenterY(panelBounds, 2, 6) - ScaleY(4f),
             _ => 0f,
         };
@@ -142,11 +147,12 @@ public sealed partial class GameForm
         {
             SettingsSlider.Bgm => _bgmVolume,
             SettingsSlider.Sfx => _sfxVolume,
+            SettingsSlider.AudioOffset => _audioOffsetMs,
             SettingsSlider.LaneBrightness => _laneBrightness,
             _ => 0,
         };
 
-        float ratio = value / 100f;
+        float ratio = GetSliderRatio(slider, value);
         int knobSize = (int)ScaleY(24f);
         int knobX = track.Left + (int)(track.Width * ratio) - knobSize / 2;
         int knobY = track.Top + track.Height / 2 - knobSize / 2;
@@ -156,13 +162,14 @@ public sealed partial class GameForm
     private Rectangle GetSliderValueBounds(SettingsSlider slider)
     {
         Rectangle panelBounds = GetPanelBoundsForSlider(slider);
-        float width = ScaleX(78f);
+        float width = slider == SettingsSlider.AudioOffset ? ScaleX(94f) : ScaleX(78f);
         float x = panelBounds.Right - ScaleX(44f) - width;
         float height = ScaleY(30f);
         float y = slider switch
         {
-            SettingsSlider.Bgm => GetRowCenterY(panelBounds, 0, 2) - height / 2f,
-            SettingsSlider.Sfx => GetRowCenterY(panelBounds, 1, 2) - height / 2f,
+            SettingsSlider.Bgm => GetRowCenterY(panelBounds, 0, 3) - height / 2f,
+            SettingsSlider.Sfx => GetRowCenterY(panelBounds, 1, 3) - height / 2f,
+            SettingsSlider.AudioOffset => GetRowCenterY(panelBounds, 2, 3) - height / 2f,
             SettingsSlider.LaneBrightness => GetRowCenterY(panelBounds, 2, 6) - height / 2f,
             _ => 0f,
         };
@@ -223,6 +230,7 @@ public sealed partial class GameForm
         {
             SettingsSlider.Bgm => GetSoundPanelBounds(),
             SettingsSlider.Sfx => GetSoundPanelBounds(),
+            SettingsSlider.AudioOffset => GetSoundPanelBounds(),
             SettingsSlider.LaneBrightness => GetVisualPanelBounds(),
             _ => Rectangle.Empty,
         };
@@ -313,7 +321,7 @@ public sealed partial class GameForm
         {
             int centerY = trackBounds.Top + trackBounds.Height / 2;
             g.DrawLine(basePen, trackBounds.Left, centerY, trackBounds.Right, centerY);
-            int fillX = trackBounds.Left + (int)(trackBounds.Width * (value / 100f));
+            int fillX = trackBounds.Left + (int)(trackBounds.Width * GetSliderRatio(slider, value));
             g.DrawLine(fillPen, trackBounds.Left, centerY, fillX, centerY);
         }
 
@@ -444,6 +452,7 @@ public sealed partial class GameForm
 
         if (TryBeginSliderDrag(location, SettingsSlider.Bgm) ||
             TryBeginSliderDrag(location, SettingsSlider.Sfx) ||
+            TryBeginSliderDrag(location, SettingsSlider.AudioOffset) ||
             TryBeginSliderDrag(location, SettingsSlider.LaneBrightness))
         {
             Invalidate();
@@ -455,6 +464,7 @@ public sealed partial class GameForm
         {
             _displayMode = displayHit == 0 ? DisplayMode.Windowed : DisplayMode.Fullscreen;
             ApplySettingsToRuntime();
+            SaveUserSettings();
             Invalidate();
             return;
         }
@@ -464,6 +474,7 @@ public sealed partial class GameForm
         {
             _frameRateMode = frameRateHit;
             ApplySettingsToRuntime();
+            SaveUserSettings();
             Invalidate();
             return;
         }
@@ -471,6 +482,7 @@ public sealed partial class GameForm
         if (GetSettingsToggleBounds("vsync").Contains(location))
         {
             _vsyncEnabled = !_vsyncEnabled;
+            SaveUserSettings();
             Invalidate();
             return;
         }
@@ -478,6 +490,7 @@ public sealed partial class GameForm
         if (GetSettingsToggleBounds("darkmode").Contains(location))
         {
             _darkModeEnabled = !_darkModeEnabled;
+            SaveUserSettings();
             Invalidate();
             return;
         }
@@ -488,6 +501,7 @@ public sealed partial class GameForm
             {
                 _themeColorIndex = i;
                 ApplySettingsToRuntime();
+                SaveUserSettings();
                 Invalidate();
                 return;
             }
@@ -497,6 +511,7 @@ public sealed partial class GameForm
         {
             ResetSettingsToDefault();
             ApplySettingsToRuntime();
+            SaveUserSettings();
             Invalidate();
         }
     }
@@ -527,10 +542,17 @@ public sealed partial class GameForm
             case SettingsSlider.Sfx:
                 _sfxVolume = value;
                 break;
+            case SettingsSlider.AudioOffset:
+                _audioOffsetMs = (int)Math.Round(-150 + ratio * 300);
+                ApplySettingsToRuntime();
+                SaveUserSettings();
+                return;
             case SettingsSlider.LaneBrightness:
                 _laneBrightness = value;
                 break;
         }
+
+        SaveUserSettings();
     }
 
     private int GetSegmentHitIndex(Rectangle bounds, int count, Point location)
@@ -560,6 +582,8 @@ public sealed partial class GameForm
             return true;
         if (Rectangle.Union(GetSliderTrackBounds(SettingsSlider.Sfx), Rectangle.Inflate(GetSliderKnobBounds(SettingsSlider.Sfx), 8, 8)).Contains(location))
             return true;
+        if (Rectangle.Union(GetSliderTrackBounds(SettingsSlider.AudioOffset), Rectangle.Inflate(GetSliderKnobBounds(SettingsSlider.AudioOffset), 8, 8)).Contains(location))
+            return true;
         if (Rectangle.Union(GetSliderTrackBounds(SettingsSlider.LaneBrightness), Rectangle.Inflate(GetSliderKnobBounds(SettingsSlider.LaneBrightness), 8, 8)).Contains(location))
             return true;
 
@@ -574,11 +598,19 @@ public sealed partial class GameForm
     {
         _bgmVolume = 80;
         _sfxVolume = 60;
+        _audioOffsetMs = 0;
         _themeColorIndex = 0;
         _laneBrightness = 70;
         _displayMode = DisplayMode.Windowed;
         _frameRateMode = 2;
         _vsyncEnabled = false;
         _darkModeEnabled = false;
+    }
+
+    private static float GetSliderRatio(SettingsSlider slider, int value)
+    {
+        return slider == SettingsSlider.AudioOffset
+            ? Math.Clamp((value + 150) / 300f, 0f, 1f)
+            : Math.Clamp(value / 100f, 0f, 1f);
     }
 }

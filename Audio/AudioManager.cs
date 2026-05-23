@@ -1,4 +1,3 @@
-using System.Media;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -7,8 +6,6 @@ namespace RhythmGame;
 internal sealed class AudioManager : IDisposable
 {
     private readonly object _sync = new();
-    private SoundPlayer? _bgmPlayer;
-    private MemoryStream? _bgmStream;
     private int _bgmVolume;
     private CancellationTokenSource _hitCts = new();
 
@@ -18,8 +15,6 @@ internal sealed class AudioManager : IDisposable
 
     private const uint SND_ASYNC  = 0x0001;
     private const uint SND_MEMORY = 0x0004;
-    private const uint SND_NOSTOP = 0x0010;
-
     // MCI P/Invoke — 인게임 BGM 재생 (PlaySound/SoundPlayer와 완전히 독립)
     [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
     private static extern int mciSendString(string command, StringBuilder? returnString, int returnSize, IntPtr hwndCallback);
@@ -27,8 +22,7 @@ internal sealed class AudioManager : IDisposable
     private bool _mciOpen;
 
     // 히트 사운드 WAV 바이트 캐시
-    private byte[]? _perfectHitWav;
-    private byte[]? _goodHitWav;
+    private readonly Dictionary<Judgment, byte[]> _hitWavCache = [];
     private int _lastHitVolume = -1;
 
     public void StartBgm(int volume)
@@ -36,20 +30,13 @@ internal sealed class AudioManager : IDisposable
         lock (_sync)
         {
             _bgmVolume = Math.Clamp(volume, 0, 100);
-            RestartBgmCore();
         }
     }
 
     public void StopBgm()
     {
-        lock (_sync)
-        {
-            _bgmPlayer?.Stop();
-            _bgmPlayer?.Dispose();
-            _bgmPlayer = null;
-            _bgmStream?.Dispose();
-            _bgmStream = null;
-        }
+        StopMainScreenBgm();
+        StopInGameBgm();
     }
 
     public void SetBgmVolume(int volume)
@@ -69,7 +56,7 @@ internal sealed class AudioManager : IDisposable
         }
     }
 
-    public void PlayHit(int volume, bool isPerfect, bool mute = false)
+    public void PlayHit(int volume, Judgment judgment, bool mute = false)
     {
         if (mute)
             return;
@@ -81,13 +68,10 @@ internal sealed class AudioManager : IDisposable
         if (clamped != _lastHitVolume)
         {
             _lastHitVolume = clamped;
-            float amp = 0.05f + clamped / 100f * 0.25f;
-            _perfectHitWav = CreateDualToneWavBytes(990, 990 * 2f, 80, amp * 0.75f, amp * 0.45f);
-            _goodHitWav = CreateDualToneWavBytes(760, 760 * 2f, 70, amp * 0.75f, amp * 0.45f);
+            RebuildHitSoundCache(clamped);
         }
 
-        byte[]? wav = isPerfect ? _perfectHitWav : _goodHitWav;
-        if (wav is not null)
+        if (_hitWavCache.TryGetValue(judgment, out byte[]? wav))
         {
             PlaySound(wav, IntPtr.Zero, SND_ASYNC | SND_MEMORY);
         }
@@ -99,7 +83,6 @@ internal sealed class AudioManager : IDisposable
         _hitCts.Dispose();
         _hitCts = new CancellationTokenSource();
         PlaySound(null, IntPtr.Zero, 0);
-        StopBgm();
         StopInGameBgm();
         StopMainScreenBgm();
     }
@@ -110,21 +93,27 @@ internal sealed class AudioManager : IDisposable
     }
 
     /// <summary>
-    /// Songs/InGameBGM 폴더의 WAV 파일을 MCI로 재생한다.
+    /// Songs/InGameBGM 폴더의 오디오 파일을 MCI로 재생한다.
     /// MCI는 PlaySound/SoundPlayer와 독립적인 채널을 사용하므로 히트 사운드와 동시 재생 가능.
     /// </summary>
-    public void PlayInGameBgm(string wavPath)
+    public void PlayInGameBgm(string audioPath)
     {
         StopInGameBgm();
-        StopBgm();
+        StopMainScreenBgm();
 
-        if (!File.Exists(wavPath))
+        if (!File.Exists(audioPath))
             return;
 
         lock (_sync)
         {
-            string safePath = $"\"{wavPath}\"";
-            mciSendString($"open {safePath} type mpegvideo alias ingamebgm", null, 0, IntPtr.Zero);
+            string safePath = $"\"{audioPath}\"";
+            int openResult = mciSendString($"open {safePath} type mpegvideo alias ingamebgm", null, 0, IntPtr.Zero);
+            if (openResult != 0)
+            {
+                _mciOpen = false;
+                return;
+            }
+
             mciSendString("play ingamebgm", null, 0, IntPtr.Zero);
             int mciVol = _bgmVolume * 10;
             mciSendString($"setaudio ingamebgm volume to {mciVol}", null, 0, IntPtr.Zero);
@@ -158,17 +147,23 @@ internal sealed class AudioManager : IDisposable
         if (!Directory.Exists(bgmDir))
             return;
 
-        string[] wavFiles = Directory.GetFiles(bgmDir, "*.wav", SearchOption.TopDirectoryOnly);
-        if (wavFiles.Length == 0)
+        string[] audioFiles = AudioFileCatalog.DiscoverSongFiles(bgmDir);
+        if (audioFiles.Length == 0)
             return;
 
-        string wavPath = wavFiles[0];
+        string audioPath = audioFiles[0];
 
         lock (_sync)
         {
-            string safePath = $"\"{wavPath}\"";
+            string safePath = $"\"{audioPath}\"";
             // mpegvideo 타입은 repeat를 지원함
-            mciSendString($"open {safePath} type mpegvideo alias mainbgm", null, 0, IntPtr.Zero);
+            int openResult = mciSendString($"open {safePath} type mpegvideo alias mainbgm", null, 0, IntPtr.Zero);
+            if (openResult != 0)
+            {
+                _mainBgmOpen = false;
+                return;
+            }
+
             mciSendString("play mainbgm repeat", null, 0, IntPtr.Zero);
             int mciVol = _bgmVolume * 10;
             mciSendString($"setaudio mainbgm volume to {mciVol}", null, 0, IntPtr.Zero);
@@ -189,14 +184,15 @@ internal sealed class AudioManager : IDisposable
         }
     }
 
-    private void RestartBgmCore()
+    private void RebuildHitSoundCache(int volume)
     {
-        _bgmPlayer?.Stop();
-        _bgmPlayer?.Dispose();
-        _bgmPlayer = null;
-        _bgmStream?.Dispose();
-        _bgmStream = null;
-        // 합성 톤 BGM은 더 이상 사용하지 않음 — MainScreenBGM WAV로 대체됨
+        _hitWavCache.Clear();
+        float amp = 0.05f + volume / 100f * 0.25f;
+        _hitWavCache[Judgment.Perfect] = CreateDualToneWavBytes(1040, 2080, 70, amp * 0.80f, amp * 0.50f);
+        _hitWavCache[Judgment.Great] = CreateDualToneWavBytes(920, 1840, 66, amp * 0.74f, amp * 0.42f);
+        _hitWavCache[Judgment.Better] = CreateDualToneWavBytes(780, 1170, 62, amp * 0.68f, amp * 0.34f);
+        _hitWavCache[Judgment.Good] = CreateDualToneWavBytes(660, 990, 58, amp * 0.62f, amp * 0.28f);
+        _hitWavCache[Judgment.Bad] = CreateDualToneWavBytes(360, 540, 80, amp * 0.55f, amp * 0.22f);
     }
 
     private static byte[] CreateDualToneWavBytes(float freqA, float freqB, int durationMs, float ampA, float ampB)
@@ -256,6 +252,5 @@ internal sealed class AudioManager : IDisposable
         PlaySound(null, IntPtr.Zero, 0);
         StopInGameBgm();
         StopMainScreenBgm();
-        StopBgm();
     }
 }

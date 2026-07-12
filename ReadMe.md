@@ -8,10 +8,6 @@ MuWorld는 Windows에서 즐길 수 있는 로컬 리듬게임입니다.
 
 [![MuWorld 곡 선택 화면](media/image.png)](media/test.mp4)
 
-위 이미지를 클릭하면 플레이 영상이 열립니다.
-
-[▶ MuWorld 플레이 영상 보기](media/test.mp4)
-
 ## 가장 빠르게 시작하기
 
 1. `MuWorld` 폴더 안의 `run.bat`를 더블클릭합니다.

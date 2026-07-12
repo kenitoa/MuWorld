@@ -2,12 +2,13 @@ namespace RhythmGame;
 
 internal static class ChartGenerator
 {
-    private const int LaneCount = 4;
     private const string ChartFolderName = "NoteLane";
     private static readonly object StatusGate = new();
     private static int _isGenerating;
+    private static int _generationRequested;
     private static ChartGenerationSnapshot _status = ChartGenerationSnapshot.Idle;
     internal static string? UserChartDirectoryOverride { get; set; }
+    internal static string? GeneratedChartDirectoryOverride { get; set; }
 
     private readonly record struct TempoSegment(float Time, float Bpm, float Confidence = 1f);
     private readonly record struct ChartPoint(int Measure, float Offset, float Time, float Energy, PatternKind Pattern);
@@ -44,6 +45,7 @@ internal static class ChartGenerator
 
     public static void BeginGenerateAllChartsAsync()
     {
+        Interlocked.Exchange(ref _generationRequested, 1);
         if (Interlocked.Exchange(ref _isGenerating, 1) == 1)
             return;
 
@@ -52,7 +54,12 @@ internal static class ChartGenerator
         {
             try
             {
-                GenerateAllChartsCore();
+                do
+                {
+                    Interlocked.Exchange(ref _generationRequested, 0);
+                    GenerateAllChartsCore();
+                }
+                while (Interlocked.CompareExchange(ref _generationRequested, 0, 0) == 1);
             }
             catch (Exception ex)
             {
@@ -62,6 +69,8 @@ internal static class ChartGenerator
             finally
             {
                 Interlocked.Exchange(ref _isGenerating, 0);
+                if (Interlocked.CompareExchange(ref _generationRequested, 0, 0) == 1)
+                    BeginGenerateAllChartsAsync();
             }
         });
     }
@@ -81,7 +90,7 @@ internal static class ChartGenerator
             return;
         }
 
-        string chartDir = Path.Combine(AppContext.BaseDirectory, ChartFolderName);
+        string chartDir = GetGeneratedChartDirectory();
         Directory.CreateDirectory(chartDir);
 
         string[] audioFiles = AudioFileCatalog.DiscoverSongFiles(bgmDir);
@@ -92,9 +101,17 @@ internal static class ChartGenerator
 
         foreach (string audioPath in audioFiles)
         {
-            string songName = Path.GetFileNameWithoutExtension(audioPath);
+            SongMetadata metadata = AudioFileCatalog.ReadSongMetadata(audioPath);
+            string songName = metadata.Title;
             try
             {
+                if (HasAllPrecomputedCharts(songName))
+                {
+                    processed++;
+                    UpdateStatus(new ChartGenerationSnapshot(true, audioFiles.Length, processed, generated, skipped, songName, "Existing charts reused."));
+                    continue;
+                }
+
                 UpdateStatus(new ChartGenerationSnapshot(true, audioFiles.Length, processed, generated, skipped, songName, "Analyzing song."));
                 AudioAnalysisResult analysis = AudioAnalysisPipeline.Analyze(audioPath);
                 if (!analysis.IsSupported || analysis.Beats.Count == 0)
@@ -107,13 +124,16 @@ internal static class ChartGenerator
 
                 for (int difficulty = 0; difficulty < 3; difficulty++)
                 {
-                    string chartFile = Path.Combine(chartDir, GetChartFileName(songName, difficulty));
-                    if (File.Exists(chartFile))
-                        continue;
+                    for (int laneCount = 4; laneCount <= 7; laneCount++)
+                    {
+                        string chartFile = GetGeneratedChartPath(songName, difficulty, laneCount);
+                        if (HasPrecomputedChart(songName, difficulty, laneCount))
+                            continue;
 
-                    string bmsContent = GenerateBms(songName, analysis.Beats, difficulty, analysis.DurationSeconds);
-                    File.WriteAllText(chartFile, bmsContent);
-                    generated++;
+                        string bmsContent = GenerateBms(songName, analysis.Beats, difficulty, analysis.DurationSeconds, laneCount);
+                        WriteChartAtomically(chartFile, bmsContent);
+                        generated++;
+                    }
                 }
 
                 processed++;
@@ -147,6 +167,40 @@ internal static class ChartGenerator
     {
         string prefix = difficultyIndex switch { 0 => "easy", 1 => "normal", _ => "hard" };
         return $"{prefix}_{NormalizeSongFileName(songName)}_{Math.Clamp(laneCount, 4, 7)}k.bms";
+    }
+
+    public static string GetGeneratedChartPath(string songName, int difficultyIndex, int laneCount)
+    {
+        return Path.Combine(GetGeneratedChartDirectory(), GetChartFileName(songName, difficultyIndex, laneCount));
+    }
+
+    public static bool HasPrecomputedChart(string songName, int difficultyIndex, int laneCount)
+    {
+        if (string.IsNullOrWhiteSpace(songName))
+            return false;
+
+        return File.Exists(GetUserChartPath(songName, difficultyIndex, laneCount)) ||
+               File.Exists(GetGeneratedChartPath(songName, difficultyIndex, laneCount));
+    }
+
+    public static bool HasAllPrecomputedCharts(string songName)
+    {
+        if (string.IsNullOrWhiteSpace(songName))
+            return false;
+
+        for (int difficulty = 0; difficulty < 3; difficulty++)
+        for (int laneCount = 4; laneCount <= 7; laneCount++)
+        {
+            if (!HasPrecomputedChart(songName, difficulty, laneCount))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static string GetGeneratedChartDirectory()
+    {
+        return GeneratedChartDirectoryOverride ?? Path.Combine(AppContext.BaseDirectory, ChartFolderName);
     }
 
     public static string GetUserChartPath(string songName, int difficultyIndex)
@@ -214,8 +268,9 @@ internal static class ChartGenerator
         File.WriteAllText(path, content);
     }
 
-    private static string GenerateBms(string songName, List<WavAnalyzer.BeatInfo> beats, int difficulty, float analyzedDurationSeconds)
+    private static string GenerateBms(string songName, List<WavAnalyzer.BeatInfo> beats, int difficulty, float analyzedDurationSeconds, int laneCount)
     {
+        laneCount = Math.Clamp(laneCount, 4, 7);
         List<TempoSegment> tempoMap = DetectTempoMap(beats);
         float bpm = tempoMap[0].Bpm;
         float duration = Math.Max(analyzedDurationSeconds, beats.Count > 0 ? beats[^1].Time + 2f : 60f);
@@ -224,9 +279,25 @@ internal static class ChartGenerator
         int targetNotes = Math.Max(10, (int)MathF.Round(GetNotesPerSecond(difficulty) * duration));
 
         List<ChartPoint> points = SelectChartPoints(beats, targetNotes, difficulty, bpm, downbeatOffset, densityCurve);
-        IReadOnlyList<LaneNote> notes = AssignGeneratedNotes(points, difficulty, LaneCount, bpm, densityCurve);
-        ChartValidationResult validated = ChartValidator.ValidateAndFilter(notes, LaneCount);
+        IReadOnlyList<LaneNote> notes = AssignGeneratedNotes(points, difficulty, laneCount, bpm, densityCurve);
+        ChartValidationResult validated = ChartValidator.ValidateAndFilter(notes, laneCount);
         return BuildBmsStringFromLaneNotes(songName, bpm, validated.Notes, tempoMap);
+    }
+
+    private static void WriteChartAtomically(string path, string content)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        string tempPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllText(tempPath, content);
+            File.Move(tempPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
     }
 
     private static float GetNotesPerSecond(int difficulty)

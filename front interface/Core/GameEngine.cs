@@ -1,7 +1,42 @@
 namespace RhythmGame;
 
+public enum NoteJudgmentPhase : byte
+{
+    Tap,
+    Start,
+    Hold,
+    End,
+}
+
+public enum NoteFailureReason : byte
+{
+    None,
+    TapMiss,
+    LongStartMiss,
+    LongHoldBreak,
+    LongEndMiss,
+    SlideStartMiss,
+    SlidePathBreak,
+    SlideEndMiss,
+}
+
+public readonly record struct NoteJudgmentEvent(
+    float ChartTime,
+    float TargetTime,
+    int Lane,
+    int EndLane,
+    NoteType NoteType,
+    NoteJudgmentPhase Phase,
+    Judgment? Judgment,
+    NoteFailureReason FailureReason,
+    float OffsetSeconds)
+{
+    public bool IsMiss => FailureReason != NoteFailureReason.None;
+}
+
 public class GameEngine
 {
+    public const float GameplayDesignHeight = 1080f;
     public const float HitZoneOffset = 130f;
     public const float PerfectWindow = 0.030f;
     public const float GreatWindow   = 0.060f;
@@ -20,6 +55,7 @@ public class GameEngine
     public int          LaneCount { get; private set; } = 4;
     public float        CurrentChartTime => IsRunning ? GetSyncedChartTime() : 0f;
     public float        VisualChartTime => IsRunning ? _visualChartTime : 0f;
+    public IReadOnlyList<NoteJudgmentEvent> JudgmentHistory => _judgmentHistory;
 
     private float _noteSpeed = 280f;
     private float _spawnTimer;
@@ -36,7 +72,10 @@ public class GameEngine
     private readonly bool[] _laneHeld = new bool[7];
     private readonly int[] _laneShuffle = new int[7];
     private readonly List<Judgment> _pendingAutoJudgments = [];
+    private readonly List<NoteJudgmentEvent> _judgmentHistory = [];
+    private readonly HashSet<Note> _holdResumeGraceNotes = [];
     private int _pendingMisses;
+    private float _holdResumeGraceUntilChartTime;
 
     public void Start(int gameHeight, IReadOnlyList<LaneNote>? chartNotes = null, int laneCount = 4)
     {
@@ -55,7 +94,10 @@ public class GameEngine
         IsRunning = true;
         Array.Clear(_laneHeld);
         _pendingAutoJudgments.Clear();
+        _judgmentHistory.Clear();
+        _holdResumeGraceNotes.Clear();
         _pendingMisses = 0;
+        _holdResumeGraceUntilChartTime = float.NegativeInfinity;
         Notes.Clear();
         Score.Reset();
     }
@@ -117,8 +159,49 @@ public class GameEngine
 
     public void SetLaneHeld(int lane, bool isHeld)
     {
-        if (lane >= 0 && lane < _laneHeld.Length)
-            _laneHeld[lane] = isHeld;
+        if (lane < 0 || lane >= _laneHeld.Length)
+            return;
+
+        _laneHeld[lane] = isHeld;
+        if (!isHeld || _holdResumeGraceNotes.Count == 0 || GetSyncedChartTime() > _holdResumeGraceUntilChartTime)
+            return;
+
+        // A timely re-press fulfils the pause grace contract. Remove only notes
+        // whose currently-required lane is actually held; other Long/Slide notes
+        // must still reacquire their own lane before the deadline.
+        float chartTime = GetSyncedChartTime();
+        foreach (Note note in _holdResumeGraceNotes.ToArray())
+        {
+            if (!IsRequiredLaneHeld(note, chartTime))
+                continue;
+
+            // Ticks that elapsed while the lane was intentionally released under
+            // pause grace are skipped, not backfilled as if it had been held.
+            note.HoldTicksAwarded = Math.Max(note.HoldTicksAwarded, CalculateExpectedHoldTicks(note, chartTime));
+            _holdResumeGraceNotes.Remove(note);
+        }
+    }
+
+    public void GrantHoldResumeGrace(float durationSeconds = 0.35f)
+    {
+        if (!IsRunning)
+            return;
+
+        float graceUntil = GetSyncedChartTime() + Math.Clamp(durationSeconds, 0f, 1f);
+        _holdResumeGraceNotes.Clear();
+        foreach (Note note in Notes.Where(note => note.State == NoteState.Holding))
+            _holdResumeGraceNotes.Add(note);
+
+        if (_holdResumeGraceNotes.Count == 0)
+        {
+            _holdResumeGraceUntilChartTime = float.NegativeInfinity;
+            return;
+        }
+
+        float nearestHeldEnd = _holdResumeGraceNotes
+            .Select(note => note.EndTargetTime + BadWindow)
+            .Min();
+        _holdResumeGraceUntilChartTime = Math.Min(graceUntil, nearestHeldEnd);
     }
 
     public int ConsumePendingMisses()
@@ -159,10 +242,22 @@ public class GameEngine
     {
         if (!IsRunning) return;
 
+        if (!float.IsFinite(deltaTime) || deltaTime < 0f)
+            deltaTime = 0f;
+
         _elapsed += deltaTime;
-        bool hasPlaybackPosition = playbackPositionSeconds.HasValue;
+        bool hasPlaybackPosition = playbackPositionSeconds.HasValue && float.IsFinite(playbackPositionSeconds.GetValueOrDefault());
         if (hasPlaybackPosition)
-            _chartTime = MathF.Max(0f, playbackPositionSeconds.GetValueOrDefault());
+        {
+            // MCI can occasionally report a stale or slightly older position.
+            // Keep advancing by monotonic frame time between coarse audio samples;
+            // a forward audio sample may catch the clock up, but a stale sample
+            // must never freeze or rewind already-resolved gameplay.
+            float reportedPosition = MathF.Max(0f, playbackPositionSeconds.GetValueOrDefault());
+            _chartTime = reportedPosition > _chartTime
+                ? reportedPosition
+                : _chartTime + deltaTime;
+        }
         else
             _chartTime += deltaTime;
 
@@ -187,7 +282,7 @@ public class GameEngine
         float syncedChartTime = GetSyncedChartTime();
         UpdateVisualChartTime(deltaTime, syncedChartTime, hasPlaybackPosition);
         float visualChartTime = VisualChartTime;
-        float hitCenterY = _gameHeight - HitZoneOffset;
+        float hitCenterY = GetHitZoneY(_gameHeight);
         for (int i = Notes.Count - 1; i >= 0; i--)
         {
             Note note = Notes[i];
@@ -197,10 +292,17 @@ public class GameEngine
 
                 if (note.State == NoteState.Holding)
                 {
+                    bool isResumeGraceActive = _holdResumeGraceNotes.Contains(note) && syncedChartTime <= _holdResumeGraceUntilChartTime;
+                    if (!IsRequiredLaneHeld(note, syncedChartTime) && isResumeGraceActive)
+                    {
+                        continue;
+                    }
+
                     UpdateHeldNote(note, syncedChartTime);
+
                     if (!IsRequiredLaneHeld(note, syncedChartTime) && syncedChartTime < note.EndTargetTime - BadWindow)
                     {
-                        ResolveMiss(note, syncedChartTime);
+                        ResolveMiss(note, syncedChartTime, GetHoldBreakReason(note));
                     }
                     else if (syncedChartTime >= note.EndTargetTime)
                     {
@@ -211,7 +313,7 @@ public class GameEngine
 
                 if (syncedChartTime - note.TargetTime > MissThreshold)
                 {
-                    ResolveMiss(note, syncedChartTime);
+                    ResolveMiss(note, syncedChartTime, GetStartMissReason(note));
                 }
             }
             else if (syncedChartTime - note.ResolvedTime > 1.0f)
@@ -247,13 +349,13 @@ public class GameEngine
 
     public readonly record struct HitResult(Judgment Judgment, string Label, float OffsetSeconds, string TimingLabel, int ChordSize = 1, string Detail = "");
 
-    public HitResult? TryHit(int lane)
+    public HitResult? TryHit(int lane, float? chartTimeOverride = null)
     {
         if (!IsRunning) return null;
 
         Note? best = null;
         float bestTimeDiff = BadWindow + 0.001f;
-        float syncedChartTime = GetSyncedChartTime();
+        float syncedChartTime = ResolveInputChartTime(chartTimeOverride);
 
         for (int i = 0; i < Notes.Count; i++)
         {
@@ -277,6 +379,7 @@ public class GameEngine
         float signedOffset = syncedChartTime - best.TargetTime;
         Score.AddHit(judgment, signedOffset);
         best.StartJudgment = judgment;
+        RecordJudgment(best, best.Type == NoteType.Tap ? NoteJudgmentPhase.Tap : NoteJudgmentPhase.Start, judgment, NoteFailureReason.None, syncedChartTime, signedOffset);
 
         if (best.Type is NoteType.Long or NoteType.Slide)
         {
@@ -293,12 +396,12 @@ public class GameEngine
         return new HitResult(judgment, JudgmentLabels[(int)judgment], signedOffset, FormatTimingLabel(signedOffset), best.ChordSize, GetHitDetail(best));
     }
 
-    public HitResult? TryRelease(int lane)
+    public HitResult? TryRelease(int lane, float? chartTimeOverride = null)
     {
         if (!IsRunning)
             return null;
 
-        float syncedChartTime = GetSyncedChartTime();
+        float syncedChartTime = ResolveInputChartTime(chartTimeOverride);
         Note? best = null;
         float bestTimeDiff = BadWindow + 0.001f;
 
@@ -315,7 +418,7 @@ public class GameEngine
             {
                 if (signedDiff < -BadWindow)
                 {
-                    ResolveMiss(note, syncedChartTime);
+                    ResolveMiss(note, syncedChartTime, GetHoldBreakReason(note));
                     return new HitResult(Judgment.Bad, "MISS", signedDiff, "EARLY RELEASE", note.ChordSize, GetHitDetail(note));
                 }
 
@@ -336,13 +439,14 @@ public class GameEngine
         Judgment judgment = Judge(bestTimeDiff);
         best.EndJudgment = judgment;
         Score.AddHit(judgment, signedOffset);
+        RecordJudgment(best, NoteJudgmentPhase.End, judgment, NoteFailureReason.None, syncedChartTime, signedOffset);
         ResolveNote(best, NoteState.Hit, syncedChartTime);
         return new HitResult(judgment, $"{JudgmentLabels[(int)judgment]} END", signedOffset, FormatTimingLabel(signedOffset), best.ChordSize, GetHitDetail(best));
     }
 
     private float CalculateSpawnLeadTime()
     {
-        float hitCenterY = _gameHeight - HitZoneOffset;
+        float hitCenterY = GetHitZoneY(_gameHeight);
         float travelDistance = Math.Max(1f, hitCenterY + Note.Height / 2f);
         return travelDistance / Math.Max(1f, _noteSpeed);
     }
@@ -350,6 +454,13 @@ public class GameEngine
     private float GetSyncedChartTime()
     {
         return _chartTime - AudioOffsetSeconds;
+    }
+
+    private float ResolveInputChartTime(float? chartTimeOverride)
+    {
+        return chartTimeOverride.HasValue && float.IsFinite(chartTimeOverride.GetValueOrDefault())
+            ? MathF.Max(0f, chartTimeOverride.GetValueOrDefault())
+            : GetSyncedChartTime();
     }
 
     private static string FormatTimingLabel(float signedOffsetSeconds)
@@ -441,12 +552,21 @@ public class GameEngine
         }
 
         note.HoldProgress = Math.Clamp((syncedChartTime - note.TargetTime) / note.Duration, 0f, 1f);
-        int expectedTicks = (int)MathF.Floor(Math.Max(0f, syncedChartTime - note.TargetTime) / HoldTickInterval);
-        while (note.HoldTicksAwarded < expectedTicks && syncedChartTime < note.EndTargetTime)
+        // Catch up ticks through the last interval strictly before the note end.
+        // Using the sampled frame time directly used to award zero catch-up ticks
+        // whenever one audio-position jump crossed the end target.
+        int expectedTicks = CalculateExpectedHoldTicks(note, syncedChartTime);
+        while (note.HoldTicksAwarded < expectedTicks)
         {
             note.HoldTicksAwarded++;
             Score.AddHoldTick();
         }
+    }
+
+    private static int CalculateExpectedHoldTicks(Note note, float chartTime)
+    {
+        float tickSampleTime = Math.Min(chartTime, note.EndTargetTime - 0.0001f);
+        return (int)MathF.Floor(Math.Max(0f, tickSampleTime - note.TargetTime) / HoldTickInterval);
     }
 
     private bool IsRequiredLaneHeld(Note note, float syncedChartTime)
@@ -470,23 +590,94 @@ public class GameEngine
     {
         if (!IsRequiredLaneHeld(note, syncedChartTime))
         {
-            ResolveMiss(note, syncedChartTime);
+            ResolveMiss(note, syncedChartTime, GetEndMissReason(note));
             return;
         }
 
         float diff = MathF.Abs(syncedChartTime - note.EndTargetTime);
-        Judgment judgment = Judge(diff);
+        if (_holdResumeGraceNotes.Contains(note) && diff > BadWindow)
+        {
+            ResolveMiss(note, syncedChartTime, GetEndMissReason(note));
+            return;
+        }
+
+        // Holding through the end is an automatic completion, so its quality must
+        // not depend on whether this WinForms timer frame arrived 5 ms or 200 ms
+        // after the chart target. An explicit release still uses TryRelease timing.
+        Judgment judgment = _holdResumeGraceNotes.Contains(note) ? Judge(diff) : Judgment.Perfect;
+        float signedOffset = _holdResumeGraceNotes.Contains(note) ? syncedChartTime - note.EndTargetTime : 0f;
         note.EndJudgment = judgment;
-        Score.AddHit(judgment, syncedChartTime - note.EndTargetTime);
+        Score.AddHit(judgment, signedOffset);
+        RecordJudgment(note, NoteJudgmentPhase.End, judgment, NoteFailureReason.None, syncedChartTime, signedOffset);
         _pendingAutoJudgments.Add(judgment);
+        _holdResumeGraceNotes.Remove(note);
         ResolveNote(note, NoteState.Hit, syncedChartTime);
     }
 
-    private void ResolveMiss(Note note, float syncedChartTime)
+    private void ResolveMiss(Note note, float syncedChartTime, NoteFailureReason reason)
     {
+        _holdResumeGraceNotes.Remove(note);
         ResolveNote(note, NoteState.Miss, syncedChartTime);
         Score.AddMiss();
         _pendingMisses++;
+        NoteJudgmentPhase phase = reason switch
+        {
+            NoteFailureReason.TapMiss => NoteJudgmentPhase.Tap,
+            NoteFailureReason.LongStartMiss or NoteFailureReason.SlideStartMiss => NoteJudgmentPhase.Start,
+            NoteFailureReason.LongHoldBreak or NoteFailureReason.SlidePathBreak => NoteJudgmentPhase.Hold,
+            _ => NoteJudgmentPhase.End,
+        };
+        float targetTime = phase is NoteJudgmentPhase.Tap or NoteJudgmentPhase.Start
+            ? note.TargetTime
+            : note.EndTargetTime;
+        RecordJudgment(note, phase, null, reason, syncedChartTime, syncedChartTime - targetTime);
+    }
+
+    private void RecordJudgment(
+        Note note,
+        NoteJudgmentPhase phase,
+        Judgment? judgment,
+        NoteFailureReason failureReason,
+        float chartTime,
+        float offsetSeconds)
+    {
+        float targetTime = phase is NoteJudgmentPhase.Tap or NoteJudgmentPhase.Start
+            ? note.TargetTime
+            : note.EndTargetTime;
+        _judgmentHistory.Add(new NoteJudgmentEvent(
+            chartTime,
+            targetTime,
+            note.Lane,
+            note.EndLane,
+            note.Type,
+            phase,
+            judgment,
+            failureReason,
+            offsetSeconds));
+    }
+
+    private static NoteFailureReason GetStartMissReason(Note note)
+    {
+        return note.Type switch
+        {
+            NoteType.Long => NoteFailureReason.LongStartMiss,
+            NoteType.Slide => NoteFailureReason.SlideStartMiss,
+            _ => NoteFailureReason.TapMiss,
+        };
+    }
+
+    private static NoteFailureReason GetHoldBreakReason(Note note)
+    {
+        return note.Type == NoteType.Slide
+            ? NoteFailureReason.SlidePathBreak
+            : NoteFailureReason.LongHoldBreak;
+    }
+
+    private static NoteFailureReason GetEndMissReason(Note note)
+    {
+        return note.Type == NoteType.Slide
+            ? NoteFailureReason.SlideEndMiss
+            : NoteFailureReason.LongEndMiss;
     }
 
     private static Judgment Judge(float absoluteTimeDiff)
@@ -530,4 +721,12 @@ public class GameEngine
             _ => string.Empty,
         };
     }
+
+    public static float GetHitZoneOffset(int gameHeight)
+    {
+        float scale = Math.Max(0.52f, gameHeight / GameplayDesignHeight);
+        return HitZoneOffset * scale;
+    }
+
+    public static float GetHitZoneY(int gameHeight) => gameHeight - GetHitZoneOffset(gameHeight);
 }

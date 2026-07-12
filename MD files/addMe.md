@@ -11,28 +11,9 @@
 - 한 곡에서만 맞는 판정/차트/오디오는 완료가 아니다.
 - 자동 테스트가 통과해도 실제 플레이 감각이 나쁘면 완료가 아니다.
 - 새 기능은 `ReadMe.md`, `Tech.md`, 이 문서 중 필요한 위치에 반영한다.
+- 검증이 끝난 항목은 이 백로그에서 제거하고 실제 동작과 구조를 `ReadMe.md` 또는 `Tech.md`에 반영한다.
 
 ## P0: 리듬게임으로서 즉시 고쳐야 할 항목
-
-### 1. 6K 키 바인딩 저장 스키마 분리
-
-문제:
-
-- 코드에는 6K 모드가 있지만 `UserSettings`에는 `KeyBindings6K`가 없다.
-- 현재 구조에서는 6K 사용자 설정이 명확하게 영속화되지 않는다.
-
-수정 요구:
-
-- `Data/UserSettings.cs`에 `KeyBindings6K`를 추가한다.
-- 기존 설정 파일을 깨지 않도록 migration fallback을 둔다.
-- `Forms/GameForm_keybindings.cs`의 serialize/load/reset 흐름에서 6K를 별도 저장한다.
-- Settings UI에서 4K/5K/6K/7K 전체가 저장, 재실행, 재로드 후 유지되어야 한다.
-
-완료 조건:
-
-- 6K 키를 바꾸고 앱을 재시작해도 유지된다.
-- 4K/5K/7K 설정이 회귀하지 않는다.
-- self-test에 6K 저장/복구 케이스가 추가된다.
 
 ### 2. 오디오 엔진 안정성 검증
 
@@ -40,18 +21,19 @@
 
 - MCI는 간단하지만 codec, position precision, device state, alias 관리에서 한계가 있다.
 - 리듬게임은 음악 위치와 판정 타이밍이 핵심이므로 오디오 clock 신뢰도를 엄격히 봐야 한다.
+- format별 jitter/drift/역행/stall telemetry와 인게임 BGM MCI 오류 로그, 판정 clock 역행 방어, pause 후 hold 재입력 grace는 구현됐지만 Main/preview 전체 오류 계측과 실제 장치 반복 측정은 아직 완료되지 않았다.
 
 수정 요구:
 
-- MCI position jitter를 측정해 로그로 남긴다.
-- pause/resume, seek, preview 전환, chart complete에서 position이 튀는지 검증한다.
+- `%LOCALAPPDATA%/RhythmGame/logs`의 audio clock summary를 같은 WAV와 비-WAV 곡에서 각각 5회 이상 수집한다.
+- pause/resume, preview 전환, chart complete에서 position과 첫 2초 판정이 튀는지 실제 장치에서 검증한다.
 - NAudio 등 대체 엔진 도입 여부를 실험하고, 실제로 더 안정적인 경우에만 교체한다.
 
 완료 조건:
 
 - 같은 곡을 5회 이상 반복 플레이해도 결과 timing bias가 비정상적으로 drift하지 않는다.
 - pause/resume 후 첫 2초 판정이 안정적이다.
-- 비-WAV 재생과 WAV 재생의 position handling 차이를 문서화한다.
+- 비-WAV 재생과 WAV 재생의 측정 결과를 수치와 함께 문서화한다.
 
 ### 3. 실제 플레이 감각 테스트 세트 구축
 
@@ -72,17 +54,16 @@
 
 ### 4. 메인 메뉴와 화면 이동 UX 정리
 
-문제:
+현재 상태:
 
-- 메인 메뉴 진입점이 변경되면서 Settings, Player, Quit의 시각적 역할이 계속 조정되고 있다.
-- 사용자가 처음 봤을 때 무엇을 누르면 어디로 가는지 즉시 알아야 한다.
+- 모든 메뉴 진입점의 hover와 keyboard/accessibility node는 구현돼 있다.
+- Player 표시는 `PLAYER STATS`와 실제 play count로 바뀌었고 Statistics 목적지를 명확히 한다.
+- 남은 핵심은 실제 screen reader 점검과 해상도별 텍스트/클릭 영역 겹침 검증이다.
 
 수정 요구:
 
-- Main Menu의 모든 클릭 가능 영역에 hover 피드백을 둔다.
-- Settings는 항상 보이는 진입점이 있어야 한다.
-- Player 영역이 Statistics로 이동한다는 것을 직관적으로 보여야 한다.
-- Quit은 위치와 형태가 다른 메뉴와 충돌하지 않아야 한다.
+- 실제 screen reader에서 시각 순서, 이름, 설명, 실행 동작을 점검한다.
+- Settings, Player Stats, Quit의 label과 hit target을 세 기준 해상도에서 자동 overlap 검사한다.
 
 완료 조건:
 
@@ -109,23 +90,6 @@
 
 - 신규 사용자가 README를 읽지 않아도 첫 곡을 시작하고 끝낼 수 있다.
 - 튜토리얼 종료 후 기본 설정이나 Song Select로 자연스럽게 이어진다.
-
-### 6. 결과 화면의 학습 피드백 강화
-
-문제:
-
-- 점수와 판정 수치만으로는 사용자가 무엇을 고쳐야 하는지 알기 어렵다.
-
-추가 요구:
-
-- Early/Late bias를 기반으로 "조금 빠름", "조금 늦음", "안정적" 같은 요약을 제공한다.
-- miss가 몰린 구간을 timeline으로 표시한다.
-- Long/Slide 실패 원인을 시작 실패, 유지 실패, 종료 실패로 분리한다.
-
-완료 조건:
-
-- 결과 화면에서 다음 플레이 목표가 명확히 보인다.
-- ScoreManager와 engine event가 같은 원인을 기록한다.
 
 ### 7. 차트 에디터 사용성 강화
 
@@ -164,15 +128,16 @@
 
 ### 9. 리플레이 신뢰성 강화
 
-문제:
+현재 상태:
 
-- 리플레이는 입력 이벤트만 저장해서는 chart 변경, offset 변경, speed 변경에 취약할 수 있다.
+- replay v3는 실제 플레이 차트 snapshot과 hash, audio SHA-256, game assembly version, offset/speed/play mode snapshot, 최대 콤보/연속 MISS와 노트별 의미 판정 결과를 저장한다.
+- 재생 전 format/version/song/mode/chart/input 검증과 재생 후 결과 비교가 구현돼 있으며 불일치는 화면과 로그에 표시된다.
+- 남은 핵심은 실제 오디오 재생을 포함한 반복 결정론 검증이다.
 
 추가 요구:
 
-- replay에 chart hash, game version, settings snapshot을 포함한다.
-- chart가 바뀐 경우 재생 전 경고한다.
-- replay 결과와 원래 결과가 다르면 mismatch를 표시한다.
+- 같은 v3 replay를 실제 곡에서 5회 이상 반복 재생하는 end-to-end 검증을 추가한다.
+- 구형 replay를 hard block할지 별도 변환 도구로 옮길지 migration 정책을 확정한다.
 
 완료 조건:
 
@@ -191,7 +156,7 @@
 
 완료 조건:
 
-- `docs/visual-skin-format.md`와 실제 로더가 일치한다.
+- `front interface/docs/visual-skin-format.md`와 실제 로더가 일치한다.
 - 스킨 오류가 게임 실행 실패로 이어지지 않는다.
 
 ### 11. 성능 기준 수립
@@ -239,8 +204,8 @@
 새 기능이나 수정은 최소한 다음 검증을 통과해야 한다.
 
 ```powershell
-.\dotnet\dotnet.exe build .\Tests\MuWorld.SelfTests.csproj -c Debug --no-restore -v:minimal
-.\dotnet\dotnet.exe .\Tests\bin\Debug\net9.0-windows\MuWorld.SelfTests.dll
+& ".\front interface\dotnet\dotnet.exe" build ".\front interface\Tests\MuWorld.SelfTests.csproj" -c Debug --no-restore -v:minimal
+& ".\front interface\dotnet\dotnet.exe" ".\front interface\Tests\bin\Debug\net9.0-windows\MuWorld.SelfTests.dll"
 ```
 
 Release 검증은 `game start.exe`가 실행 중이면 파일 잠금으로 실패할 수 있다. Release 검증 전에는 실행 중인 Release 앱을 종료한다.

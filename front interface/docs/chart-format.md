@@ -7,7 +7,7 @@ MuWorld uses a compact BMS subset for generated and user-edited charts.
 - Built-in/generated charts: `NoteLane/*.bms`
 - User charts: `%LOCALAPPDATA%/RhythmGame/Charts/*.bms`
 - Lane-specific user charts are preferred: `easy_song_4k.bms`, `normal_song_7k.bms`
-- Legacy charts without `_4k/_5k/_7k` are still loaded as fallback.
+- Legacy charts without `_4k/_5k/_6k/_7k` are still loaded as fallback.
 
 ## Headers
 
@@ -56,7 +56,8 @@ The loader and editor collect warnings and filter unsafe notes.
 - measure must be `000` to `999`
 - channel resolution must be 192 cells or less
 - BPM values must be positive
-- lane and slide end lane must fit the current 4K/5K/7K mode
+- lane and slide end lane must fit the current 4K/5K/6K/7K mode
+- note time and duration must be finite, and duration cannot be negative
 - same-lane notes must respect the minimum tap gap
 - Long/Slide notes reserve their occupied lane until their end plus a short gap
 - chords cannot contain more notes than the current lane count

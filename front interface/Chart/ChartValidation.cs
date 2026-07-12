@@ -46,9 +46,21 @@ internal static class ChartValidator
 
         foreach (LaneNote note in source.OrderBy(n => n.Time).ThenBy(n => n.Lane))
         {
-            if (note.Time < 0f)
+            if (!float.IsFinite(note.Time) || note.Time < 0f)
             {
-                diagnostics.Add(new ChartDiagnostic(ChartDiagnosticSeverity.Warning, $"Skipped note with negative time {note.Time:F3}s."));
+                diagnostics.Add(new ChartDiagnostic(ChartDiagnosticSeverity.Warning, $"Skipped note with invalid time {note.Time}."));
+                continue;
+            }
+
+            if (!Enum.IsDefined(note.Type))
+            {
+                diagnostics.Add(new ChartDiagnostic(ChartDiagnosticSeverity.Warning, $"Skipped note with invalid type value {(int)note.Type}."));
+                continue;
+            }
+
+            if (!float.IsFinite(note.Duration) || note.Duration < 0f)
+            {
+                diagnostics.Add(new ChartDiagnostic(ChartDiagnosticSeverity.Warning, $"Skipped note with invalid duration {note.Duration}."));
                 continue;
             }
 
@@ -119,13 +131,23 @@ internal static class ChartValidator
         int longCount = 0;
         int slideCount = 0;
 
-        LaneNote? previous = null;
-        foreach (LaneNote note in notes.OrderBy(n => n.Time).ThenBy(n => n.Lane))
+        List<LaneNote> ordered = notes.OrderBy(n => n.Time).ThenBy(n => n.Lane).ToList();
+        int chordLeft = 0;
+        int chordRight = 0;
+        for (int i = 0; i < ordered.Count; i++)
         {
-            int sameTime = notes.Count(other => other != note && MathF.Abs(other.Time - note.Time) <= ChordWindowSeconds);
-            if (sameTime > 0)
+            while (ordered[i].Time - ordered[chordLeft].Time > ChordWindowSeconds)
+                chordLeft++;
+            chordRight = Math.Max(chordRight, i + 1);
+            while (chordRight < ordered.Count && ordered[chordRight].Time - ordered[i].Time <= ChordWindowSeconds)
+                chordRight++;
+            if (chordRight - chordLeft > 1)
                 chordNotes++;
+        }
 
+        LaneNote? previous = null;
+        foreach (LaneNote note in ordered)
+        {
             if (previous is LaneNote prev)
             {
                 if (prev.Lane == note.Lane && note.Time - prev.Time <= 0.22f)

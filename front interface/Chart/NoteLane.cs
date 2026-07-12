@@ -55,12 +55,12 @@ public static class NoteLane
                     return ChartValidator.ValidateAndFilter(NormalizeForLaneMode(result.Notes, difficultyIndex, laneCount), laneCount, result.Diagnostics);
             }
 
-            string laneSpecificGeneratedPath = Path.Combine(chartDir, ChartGenerator.GetChartFileName(title, difficultyIndex, laneCount));
+            string laneSpecificGeneratedPath = ChartGenerator.GetGeneratedChartPath(title, difficultyIndex, laneCount);
             if (File.Exists(laneSpecificGeneratedPath))
             {
                 BmsParseResult result = ParseSimpleBms(laneSpecificGeneratedPath, laneCount);
                 if (result.Notes.Count > 0)
-                    return ChartValidator.ValidateAndFilter(ApplyDynamicDifficulty(NormalizeForLaneMode(result.Notes, difficultyIndex, laneCount), title, difficultyIndex, laneCount), laneCount, result.Diagnostics);
+                    return ChartValidator.ValidateAndFilter(NormalizeForLaneMode(result.Notes, difficultyIndex, laneCount), laneCount, result.Diagnostics);
             }
 
             string generatedPath = Path.Combine(chartDir, ChartGenerator.GetChartFileName(title, difficultyIndex));
@@ -347,6 +347,12 @@ public static class NoteLane
     {
         if (laneCount == 5)
             return index % 5;
+
+        if (laneCount == 6)
+        {
+            int[] sixKeyOrder = [0, 3, 5, 2, 4, 1];
+            return sixKeyOrder[index % sixKeyOrder.Length];
+        }
 
         int[] sevenKeyOrder = [0, 3, 6, 2, 4, 1, 5];
         return sevenKeyOrder[index % sevenKeyOrder.Length];

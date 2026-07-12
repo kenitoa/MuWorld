@@ -18,6 +18,15 @@ public sealed partial class GameForm
         Keys.RWin,
         Keys.Pause,
         Keys.CapsLock,
+        Keys.P,
+        Keys.D1,
+        Keys.D2,
+        Keys.D3,
+        Keys.D4,
+        Keys.D6,
+        Keys.D7,
+        Keys.NumPad6,
+        Keys.NumPad7,
     ];
 
     private int GetLaneForKey(Keys key)
@@ -32,7 +41,7 @@ public sealed partial class GameForm
         return -1;
     }
 
-    private void BeginLaneInput(int lane, string input, string source)
+    private void BeginLaneInput(int lane, string input, string source, float? chartTimeOverride = null)
     {
         if (lane < 0 || lane >= LaneCount || _lanePressed[lane])
             return;
@@ -40,7 +49,7 @@ public sealed partial class GameForm
         _lanePressed[lane] = true;
         _engine.SetLaneHeld(lane, true);
 
-        GameEngine.HitResult? hit = _engine.TryHit(lane);
+        GameEngine.HitResult? hit = _engine.TryHit(lane, chartTimeOverride);
         string judgment = string.Empty;
         if (hit is not null)
         {
@@ -49,7 +58,6 @@ public sealed partial class GameForm
             _feedbackTiming = hit.Value.TimingLabel;
             _feedbackJudgment = hit.Value.Judgment;
             _feedbackTime = DateTime.Now;
-            _audio.PlayHit(_sfxVolume, hit.Value.Judgment);
             ApplyGaugeForHitResult(hit.Value);
         }
         ConsumeEngineGaugeEvents();
@@ -59,14 +67,14 @@ public sealed partial class GameForm
             EndGame();
     }
 
-    private void EndLaneInput(int lane, string input, string source)
+    private void EndLaneInput(int lane, string input, string source, float? chartTimeOverride = null)
     {
         if (lane < 0 || lane >= LaneCount)
             return;
 
         _lanePressed[lane] = false;
         _engine.SetLaneHeld(lane, false);
-        GameEngine.HitResult? release = _engine.TryRelease(lane);
+        GameEngine.HitResult? release = _engine.TryRelease(lane, chartTimeOverride);
         string judgment = string.Empty;
         if (release is not null)
         {
@@ -75,8 +83,11 @@ public sealed partial class GameForm
             _feedbackTiming = release.Value.TimingLabel;
             _feedbackJudgment = release.Value.Judgment;
             _feedbackTime = DateTime.Now;
-            _audio.PlayHit(_sfxVolume, release.Value.Judgment);
-            ApplyGaugeForHitResult(release.Value);
+            // Early release is resolved by the engine as one MISS. Its HitResult
+            // only carries the BAD sound/color, so do not also apply BAD gauge
+            // loss before ConsumeEngineGaugeEvents applies the MISS loss.
+            if (!string.Equals(release.Value.Label, "MISS", StringComparison.Ordinal))
+                ApplyGaugeForHitResult(release.Value);
         }
         ConsumeEngineGaugeEvents();
 
@@ -153,9 +164,24 @@ public sealed partial class GameForm
 
     private void LoadKeyBindingsFromSettings(UserSettings settings)
     {
-        TryLoadKeyBindings(0, settings.KeyBindings4K);
-        TryLoadKeyBindings(1, settings.KeyBindings5K);
-        TryLoadKeyBindings(2, settings.KeyBindings7K);
+        string[] fourKeyBindings = settings.KeyBindings4K ?? [];
+        string[] fiveKeyBindings = settings.KeyBindings5K ?? [];
+        string[] configuredSixKeyBindings = settings.KeyBindings6K ?? [];
+        string[] configuredSevenKeyBindings = settings.KeyBindings7K ?? [];
+
+        TryLoadKeyBindings(0, fourKeyBindings);
+        TryLoadKeyBindings(1, fiveKeyBindings);
+
+        // Builds before the dedicated 6K field accidentally stored the six-key
+        // array in KeyBindings7K. Accept that exact legacy shape once, then save
+        // it back into the separated schema on the next settings write.
+        string[] sixKeyBindings = configuredSixKeyBindings.Length == LaneModes[2].Count
+            ? configuredSixKeyBindings
+            : configuredSevenKeyBindings.Length == LaneModes[2].Count
+                ? configuredSevenKeyBindings
+                : [];
+        TryLoadKeyBindings(2, sixKeyBindings);
+        TryLoadKeyBindings(3, configuredSevenKeyBindings);
     }
 
     private void TryLoadKeyBindings(int modeIndex, string[] serialized)
@@ -244,7 +270,7 @@ public sealed partial class GameForm
                 return true;
             }
 
-            message = "SPACE IS ONLY FOR 5K/7K CENTER";
+            message = "SPACE IS ONLY ALLOWED ON A CENTER LANE";
             return false;
         }
 
@@ -289,7 +315,7 @@ public sealed partial class GameForm
     {
         DrawSettingsBackground(g);
 
-        using var titleFont = new Font("Segoe UI", Math.Max(24f, MenuS(50f)), FontStyle.Regular);
+        using var titleFont = new Font("Segoe UI", Math.Max(20f, MenuS(36f)), FontStyle.Regular);
         using var tabFont = new Font("Segoe UI", Math.Max(8f, MenuS(15f)), FontStyle.Regular);
         using var labelFont = new Font("Segoe UI", Math.Max(8f, MenuS(16f)), FontStyle.Regular);
         using var keyFont = new Font("Segoe UI", Math.Max(18f, MenuS(35f)), FontStyle.Bold);
@@ -303,7 +329,7 @@ public sealed partial class GameForm
         using var accentBrush = new SolidBrush(GetAccentColor());
 
         DrawKeyBindingBackButton(g, GetKeyBindingBackButtonBounds());
-        DrawSpacedString(g, "KEY BINDINGS", titleFont, titleBrush, MenuX(840f), MenuY(60f), MenuS(20f), centered: true);
+        DrawSpacedString(g, "KEY BINDINGS", titleFont, titleBrush, MenuX(840f), MenuY(76f), MenuS(16f), centered: true);
         DrawModeTabs(g, GetKeyBindingModeTabBounds(), tabFont);
 
         Rectangle panel = GetKeyBindingPanelBounds();
@@ -335,7 +361,7 @@ public sealed partial class GameForm
 
     private void DrawModeTabs(Graphics g, Rectangle bounds, Font font)
     {
-        string[] labels = ["4K", "5K", "7K"];
+        string[] labels = LaneModes.Select(mode => $"{mode.Count}K").ToArray();
         Color accent = GetAccentColor();
         using var path = CreateRoundedRect(bounds, MenuS(9f));
         using var fill = new SolidBrush(Color.FromArgb(30, 8, 12, 22));

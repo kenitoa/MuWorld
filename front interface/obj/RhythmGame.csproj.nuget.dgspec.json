@@ -5,12 +5,12 @@
   },
   "projects": {
     "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "restore": {
         "projectUniqueName": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj",
         "projectName": "game start",
         "projectPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj",
-        "packagesPath": "C:\\Users\\CodexSandboxOffline\\.nuget\\packages\\",
+        "packagesPath": "C:\\Users\\abc20\\.nuget\\packages\\",
         "outputPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [

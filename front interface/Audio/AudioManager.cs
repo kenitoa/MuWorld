@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -25,6 +26,16 @@ internal sealed class AudioManager : IDisposable
 
     private bool _mciOpen;
     private int _inGameBgmLengthMs;
+    private readonly Stopwatch _inGameClockStopwatch = new();
+    private readonly AudioClockDiagnostics _clockDiagnostics = new();
+    private const double PositionQueryIntervalSeconds = 0.05d;
+    private float _positionClockAnchorSeconds;
+    private double _positionClockAnchorWallSeconds;
+    private double _lastPositionQueryWallSeconds;
+    private double _lastFinishQueryWallSeconds;
+    private bool _lastKnownFinished;
+
+    internal AudioClockSnapshot ClockDiagnosticsSnapshot => _clockDiagnostics.Snapshot();
 
     // 히트 사운드 WAV 바이트 캐시
     private readonly Dictionary<Judgment, byte[]> _hitWavCache = [];
@@ -160,15 +171,30 @@ internal sealed class AudioManager : IDisposable
             if (openResult != 0)
             {
                 _mciOpen = false;
+                AppLogger.Info($"MCI open failed code={openResult}, format={Path.GetExtension(audioPath)}");
                 return;
             }
 
-            mciSendString("set ingamebgm time format milliseconds", null, 0, IntPtr.Zero);
-            mciSendString("play ingamebgm", null, 0, IntPtr.Zero);
+            int formatResult = mciSendString("set ingamebgm time format milliseconds", null, 0, IntPtr.Zero);
+            int playResult = mciSendString("play ingamebgm", null, 0, IntPtr.Zero);
+            if (formatResult != 0 || playResult != 0)
+            {
+                AppLogger.Info($"MCI play failed formatCode={formatResult}, playCode={playResult}, format={Path.GetExtension(audioPath)}");
+                mciSendString("close ingamebgm", null, 0, IntPtr.Zero);
+                _mciOpen = false;
+                return;
+            }
+
             int mciVol = _bgmVolume * 10;
-            mciSendString($"setaudio ingamebgm volume to {mciVol}", null, 0, IntPtr.Zero);
+            int volumeResult = mciSendString($"setaudio ingamebgm volume to {mciVol}", null, 0, IntPtr.Zero);
+            if (volumeResult != 0)
+                AppLogger.Info($"MCI volume command failed code={volumeResult}");
             _inGameBgmLengthMs = QueryMciInt("status ingamebgm length");
             _mciOpen = true;
+            _inGameClockStopwatch.Restart();
+            ResetPositionClock(0f, 0d);
+            _clockDiagnostics.Start(Path.GetExtension(audioPath), 0f, 0d);
+            AppLogger.Info($"Audio clock monitor start format={Path.GetExtension(audioPath).TrimStart('.').ToLowerInvariant()}, lengthMs={_inGameBgmLengthMs}");
         }
     }
 
@@ -178,29 +204,69 @@ internal sealed class AudioManager : IDisposable
         {
             if (_mciOpen)
             {
-                mciSendString("stop ingamebgm", null, 0, IntPtr.Zero);
-                mciSendString("close ingamebgm", null, 0, IntPtr.Zero);
+                if (TryQueryInGamePosition(out float positionSeconds))
+                    _clockDiagnostics.Record(positionSeconds, _inGameClockStopwatch.Elapsed.TotalSeconds);
+                else
+                    _clockDiagnostics.RecordQueryFailure();
+
+                int stopResult = mciSendString("stop ingamebgm", null, 0, IntPtr.Zero);
+                int closeResult = mciSendString("close ingamebgm", null, 0, IntPtr.Zero);
+                if (stopResult != 0 || closeResult != 0)
+                    AppLogger.Info($"MCI stop failed stopCode={stopResult}, closeCode={closeResult}");
+                AppLogger.Info(_clockDiagnostics.Snapshot().ToLogMessage());
                 _mciOpen = false;
                 _inGameBgmLengthMs = 0;
+                _inGameClockStopwatch.Reset();
+                ResetPositionClock(0f, 0d);
             }
         }
     }
 
-    public void PauseInGameBgm()
+    public bool PauseInGameBgm()
     {
         lock (_sync)
         {
-            if (_mciOpen)
-                mciSendString("pause ingamebgm", null, 0, IntPtr.Zero);
+            if (!_mciOpen)
+                return true;
+
+            float position = 0f;
+            if (TryQueryInGamePosition(out float measuredPosition))
+            {
+                position = measuredPosition;
+                ResetPositionClock(position, _inGameClockStopwatch.Elapsed.TotalSeconds);
+                _clockDiagnostics.Record(position, _inGameClockStopwatch.Elapsed.TotalSeconds);
+            }
+            else
+            {
+                _clockDiagnostics.RecordQueryFailure();
+            }
+            int result = mciSendString("pause ingamebgm", null, 0, IntPtr.Zero);
+            AppLogger.Info($"Audio pause positionMs={(int)MathF.Round(position * 1000f)}, result={result}");
+            return result == 0;
         }
     }
 
-    public void ResumeInGameBgm()
+    public bool ResumeInGameBgm()
     {
         lock (_sync)
         {
-            if (_mciOpen)
-                mciSendString("resume ingamebgm", null, 0, IntPtr.Zero);
+            if (!_mciOpen)
+                return true;
+
+            int result = mciSendString("resume ingamebgm", null, 0, IntPtr.Zero);
+            float position = 0f;
+            if (TryQueryInGamePosition(out float measuredPosition))
+            {
+                position = measuredPosition;
+                ResetPositionClock(position, _inGameClockStopwatch.Elapsed.TotalSeconds);
+                _clockDiagnostics.ResetBaseline(position, _inGameClockStopwatch.Elapsed.TotalSeconds);
+            }
+            else
+            {
+                _clockDiagnostics.RecordQueryFailure();
+            }
+            AppLogger.Info($"Audio resume positionMs={(int)MathF.Round(position * 1000f)}, result={result}");
+            return result == 0;
         }
     }
 
@@ -211,16 +277,63 @@ internal sealed class AudioManager : IDisposable
             if (!_mciOpen)
                 return null;
 
-            var buffer = new StringBuilder(64);
-            int result = mciSendString("status ingamebgm position", buffer, buffer.Capacity, IntPtr.Zero);
-            if (result != 0)
-                return null;
+            double wallSeconds = _inGameClockStopwatch.Elapsed.TotalSeconds;
+            float positionSeconds = GetPredictedPosition(wallSeconds);
 
-            string value = buffer.ToString().Trim();
-            return int.TryParse(value, out int milliseconds)
-                ? milliseconds / 1000f
-                : null;
+            // MCI position calls are synchronous and can block the WinForms UI
+            // thread. Sample MCI at a bounded rate, then use the local monotonic
+            // clock between samples so notes never freeze on repeated MCI values.
+            if (wallSeconds - _lastPositionQueryWallSeconds >= PositionQueryIntervalSeconds)
+            {
+                _lastPositionQueryWallSeconds = wallSeconds;
+                if (TryQueryInGamePosition(out float measuredPosition))
+                {
+                    // A coarse MCI sample may lag behind the already-predicted
+                    // position. Only a forward sample is allowed to re-anchor the
+                    // clock; rewinding would make judged notes reversible.
+                    if (measuredPosition > positionSeconds)
+                    {
+                        ResetPositionClock(measuredPosition, wallSeconds);
+                        positionSeconds = measuredPosition;
+                    }
+
+                    _clockDiagnostics.Record(measuredPosition, wallSeconds);
+                }
+                else
+                {
+                    _clockDiagnostics.RecordQueryFailure();
+                }
+            }
+
+            if (_inGameBgmLengthMs > 0)
+                positionSeconds = Math.Min(positionSeconds, _inGameBgmLengthMs / 1000f);
+
+            return Math.Max(0f, positionSeconds);
         }
+    }
+
+    private float GetPredictedPosition(double wallSeconds)
+    {
+        double elapsed = Math.Max(0d, wallSeconds - _positionClockAnchorWallSeconds);
+        return _positionClockAnchorSeconds + (float)elapsed;
+    }
+
+    private void ResetPositionClock(float positionSeconds, double wallSeconds)
+    {
+        _positionClockAnchorSeconds = Math.Max(0f, positionSeconds);
+        _positionClockAnchorWallSeconds = Math.Max(0d, wallSeconds);
+        _lastPositionQueryWallSeconds = _positionClockAnchorWallSeconds;
+        _lastFinishQueryWallSeconds = _positionClockAnchorWallSeconds;
+        _lastKnownFinished = false;
+    }
+
+    private static bool TryQueryInGamePosition(out float positionSeconds)
+    {
+        positionSeconds = 0f;
+        var buffer = new StringBuilder(64);
+        int result = mciSendString("status ingamebgm position", buffer, buffer.Capacity, IntPtr.Zero);
+        return result == 0 && int.TryParse(buffer.ToString().Trim(), out int milliseconds) &&
+               (positionSeconds = Math.Max(0, milliseconds) / 1000f) >= 0f;
     }
 
     public bool IsInGameBgmFinished(float graceSeconds = 0.15f)
@@ -230,15 +343,22 @@ internal sealed class AudioManager : IDisposable
             if (!_mciOpen)
                 return true;
 
-            int position = QueryMciInt("status ingamebgm position");
-            int length = _inGameBgmLengthMs > 0 ? _inGameBgmLengthMs : QueryMciInt("status ingamebgm length");
-            if (length <= 0)
+            double wallSeconds = _inGameClockStopwatch.Elapsed.TotalSeconds;
+            if (_inGameBgmLengthMs > 0)
             {
-                string mode = QueryMciString("status ingamebgm mode");
-                return string.Equals(mode, "stopped", StringComparison.OrdinalIgnoreCase);
+                float predictedPosition = GetPredictedPosition(wallSeconds);
+                return predictedPosition >= Math.Max(0f, _inGameBgmLengthMs / 1000f - Math.Max(0f, graceSeconds));
             }
 
-            return position >= Math.Max(0, length - (int)MathF.Round(graceSeconds * 1000f));
+            // Unknown-duration codecs still require an MCI mode query, but never
+            // issue that synchronous command on every UI frame.
+            if (wallSeconds - _lastFinishQueryWallSeconds < 0.25d)
+                return _lastKnownFinished;
+
+            _lastFinishQueryWallSeconds = wallSeconds;
+            string mode = QueryMciString("status ingamebgm mode");
+            _lastKnownFinished = string.Equals(mode, "stopped", StringComparison.OrdinalIgnoreCase);
+            return _lastKnownFinished;
         }
     }
 

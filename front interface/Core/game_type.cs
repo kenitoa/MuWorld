@@ -17,6 +17,7 @@ public sealed partial class GameForm
 
     private void CycleGameModeForward()
     {
+        InvalidateReplayRecording("VISUAL MODE CHANGED");
         _gameMode = _gameMode switch
         {
             GameMode.Normal => GameMode.Blind,
@@ -28,6 +29,7 @@ public sealed partial class GameForm
 
     private void CycleGameModeBackward()
     {
+        InvalidateReplayRecording("VISUAL MODE CHANGED");
         _gameMode = _gameMode switch
         {
             GameMode.Normal => GameMode.Fog,
@@ -37,7 +39,11 @@ public sealed partial class GameForm
         };
     }
 
-    private string GetGameModeLabel() => GameModeLabels[(int)_gameMode];
+    private GameMode EffectiveGameMode => ActiveReplaySettings is { } settings
+        ? (GameMode)Math.Clamp(settings.GameModeIndex, 0, GameModeLabels.Length - 1)
+        : _gameMode;
+
+    private string GetGameModeLabel() => GameModeLabels[(int)EffectiveGameMode];
 
     private static readonly Font _gameModeFont = new("Segoe UI", 11, FontStyle.Bold);
 
@@ -64,7 +70,7 @@ public sealed partial class GameForm
 
     private void ApplyGameModeEffect(Graphics g, Rectangle playArea, int hitY)
     {
-        switch (_gameMode)
+        switch (EffectiveGameMode)
         {
             case GameMode.Blind:
                 int blindCover = hitY - 120;

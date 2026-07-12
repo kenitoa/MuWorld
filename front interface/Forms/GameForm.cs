@@ -135,6 +135,7 @@ public sealed partial class GameForm : Form
     private ChartDifficultyInfo? _chartEditorDifficulty;
 
     // Analyze screen state
+    private string _analyzeSongId = string.Empty;
     private string _analyzeSongTitle = string.Empty;
     private string _analyzeSongArtist = string.Empty;
     private int _analyzeSongArtworkStyle;
@@ -160,6 +161,8 @@ public sealed partial class GameForm : Form
     private bool _isAnalyzeOkHovered;
     private int _hoverAnalyzeAction = -1;
     private bool _analyzeIsNewRecord;
+    private ResultFeedbackSummary _analyzeFeedback = new("NO TIMING DATA", "NEXT: KEEP THE COMBO STABLE", "NO MISS BREAKS", "NO MISS", [], 0);
+    private string _analyzeReplayStatus = string.Empty;
     private DateTime _chartCompleteTime;
     private bool _chartCompleteWaiting;
 
@@ -203,12 +206,16 @@ public sealed partial class GameForm : Form
     ];
     private string _gameBgaPath = string.Empty;
     private Bitmap? _gameBgaImage;
+    private Bitmap? _gameBackgroundCache;
+    private string _gameBackgroundCacheKey = string.Empty;
     private const float GameStartDelaySeconds = 3f;
     private string _comboMilestoneText = string.Empty;
     private DateTime _comboMilestoneTime;
     private int _lastComboMilestone;
     private long _gameDrawFrameCount;
+    private long _lastGameDrawSampleFrame;
     private long _lastGameDrawAllocatedBytes;
+    private float _lastPlaybackPositionSeconds;
     private DateTime _lastAllocationLogTime;
 
     [DllImport("dwmapi.dll")]
@@ -271,6 +278,12 @@ public sealed partial class GameForm : Form
     private readonly bool[] _keyTestPressed = new bool[7];
     private int _mouseHeldLane = -1;
     private readonly List<InputLogEvent> _inputLogEvents = [];
+    private string _replayRecordingInvalidReason = string.Empty;
+    private string _sessionAudioFingerprint = string.Empty;
+    private Task<string>? _sessionAudioFingerprintTask;
+    private CancellationTokenSource? _sessionAudioFingerprintCancellation;
+    private int _replayLoadGeneration;
+    private CancellationTokenSource? _replayLoadCancellation;
 
     // ── HUD 캐시 (불필요한 문자열 할당 방지) ────────────────────────────────────
     private string _cachedStatsText = string.Empty;
@@ -297,6 +310,16 @@ public sealed partial class GameForm : Form
     private Keys[] LaneKeys => _laneKeyBindings[_laneModeIndex];
     private string[] LaneLabels => _laneKeyBindings[_laneModeIndex].Select(FormatKeyLabel).ToArray();
     private int LaneWidth => ClientSize.Width / LaneCount;
+    private ReplaySettingsSnapshot? ActiveReplaySettings => _isReplayPlayback ? _activeReplay?.Settings : null;
+    private float EffectiveSpeedMultiplier => ActiveReplaySettings is { } settings
+        ? Math.Clamp(settings.NoteSpeedPercent / 100f, 0.1f, 5f)
+        : _speedMultiplier;
+    private int EffectiveAudioOffsetMs => ActiveReplaySettings is { } settings
+        ? Math.Clamp(settings.AudioOffsetMs, -150, 150)
+        : _audioOffsetMs;
+    private int EffectivePlayModeIndex => ActiveReplaySettings is { } settings
+        ? Math.Clamp(settings.PlayModeIndex, 0, PlayModeLabels.Length - 1)
+        : _playModeIndex;
 
     private static readonly Color[] LaneColors =
     [
@@ -310,6 +333,7 @@ public sealed partial class GameForm : Form
     ];
 
     private readonly bool[] _lanePressed = new bool[7];
+    private readonly bool[] _pauseHeldLaneAwaitingKeyUp = new bool[7];
 
     // ── 캐시된 GDI+ 객체 (게임 렌더링 성능 최적화) ──────────────────────────────
     private static readonly SolidBrush[] _noteGlowBrushes = LaneColors
@@ -440,6 +464,7 @@ public sealed partial class GameForm : Form
         if (!selfTestMode)
         {
             ChartGenerator.BeginGenerateAllChartsAsync();
+            StartSongFolderWatcher();
             _audio.PlayMainScreenBgm();
             _splashTimer.Tick += OnSplashTick;
             _splashTimer.Start();
@@ -549,8 +574,17 @@ public sealed partial class GameForm : Form
         }
 
         MaintainAutoPlayLaneHolds();
-        _engine.Update(dt, _audio.GetInGameBgmPositionSeconds());
-        ProcessReplayPlayback();
+        float? playbackPosition = _audio.GetInGameBgmPositionSeconds();
+        if (playbackPosition.HasValue && float.IsFinite(playbackPosition.GetValueOrDefault()))
+            _lastPlaybackPositionSeconds = Math.Max(0f, playbackPosition.GetValueOrDefault());
+        if (_isReplayPlayback)
+            UpdateReplayPlayback(dt, playbackPosition);
+        else
+            _engine.Update(dt, playbackPosition);
+
+        if (!_engine.IsRunning)
+            return;
+
         ProcessAutoPlayMode();
         ConsumeEngineGaugeEvents();
         UpdateComboMilestone();
@@ -722,8 +756,35 @@ public sealed partial class GameForm : Form
                 return;
             }
 
+            if (_screen == UiScreen.Analyze)
+            {
+                e.SuppressKeyPress = true;
+                if (e.KeyCode is Keys.Escape or Keys.Back or Keys.Enter or Keys.Space)
+                {
+                    ActivateAnalyzeAction(1);
+                    return;
+                }
+
+                if (e.KeyCode == Keys.R)
+                {
+                    ActivateAnalyzeAction(0);
+                    return;
+                }
+
+                if (e.KeyCode is Keys.N or Keys.Right)
+                {
+                    ActivateAnalyzeAction(2);
+                    return;
+                }
+
+                return;
+            }
+
             if (_screen == UiScreen.SongSelect)
             {
+                if (e.KeyCode != Keys.L)
+                    CancelPendingReplayLoad();
+
                 if (e.KeyCode == Keys.Escape)
                 {
                     e.SuppressKeyPress = true;
@@ -888,6 +949,17 @@ public sealed partial class GameForm : Form
 
         if (_isGamePaused)
         {
+            int pausedLane = GetLaneForKey(e.KeyCode);
+            if (!_isReplayPlayback && pausedLane >= 0)
+            {
+                // A held key can keep producing KeyDown repeats over the pause
+                // overlay. Require its physical KeyUp before accepting a fresh
+                // reacquire press after resume.
+                _pauseHeldLaneAwaitingKeyUp[pausedLane] = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
+
             if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.P)
             {
                 e.SuppressKeyPress = true;
@@ -908,6 +980,17 @@ public sealed partial class GameForm : Form
 
         if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.P) { e.SuppressKeyPress = true; PauseGame(); return; }
 
+        if (_isReplayPlayback)
+        {
+            e.SuppressKeyPress = true;
+            _feedback = "INPUT LOCKED";
+            _feedbackTiming = "REPLAY";
+            _feedbackJudgment = null;
+            _feedbackTime = DateTime.Now;
+            Invalidate();
+            return;
+        }
+
         // 배속 조절: 1키 증가, 2키 감소
         if (e.KeyCode == Keys.D1) { e.SuppressKeyPress = true; IncreaseSpeed(); Invalidate(); return; }
         if (e.KeyCode == Keys.D2) { e.SuppressKeyPress = true; DecreaseSpeed(); Invalidate(); return; }
@@ -919,6 +1002,11 @@ public sealed partial class GameForm : Form
         if (e.KeyCode == Keys.D4) { e.SuppressKeyPress = true; CycleGameModeBackward(); Invalidate(); return; }
 
         int boundLane = GetLaneForKey(e.KeyCode);
+        if (boundLane >= 0 && _pauseHeldLaneAwaitingKeyUp[boundLane])
+        {
+            e.SuppressKeyPress = true;
+            return;
+        }
         if (boundLane >= 0)
         {
             e.SuppressKeyPress = true;
@@ -941,7 +1029,6 @@ public sealed partial class GameForm : Form
                 _feedbackJudgment = hit.Value.Judgment;
                 _feedbackTime = DateTime.Now;
 
-                _audio.PlayHit(_sfxVolume, hit.Value.Judgment);
             }
             // Invalidate()는 타이머(~8ms)가 이미 매 프레임 호출하므로 생략
             break;
@@ -960,6 +1047,30 @@ public sealed partial class GameForm : Form
         }
 
         int boundLane = GetLaneForKey(e.KeyCode);
+        if (_isReplayPlayback)
+            return;
+
+        if (boundLane >= 0 && _pauseHeldLaneAwaitingKeyUp[boundLane])
+        {
+            // Consume the first physical release after a pause without turning it
+            // into an early Long/Slide release. The following KeyDown is the
+            // explicit reacquire input covered by resume grace.
+            _pauseHeldLaneAwaitingKeyUp[boundLane] = false;
+            _lanePressed[boundLane] = false;
+            _engine.SetLaneHeld(boundLane, false);
+            return;
+        }
+
+        if (_isGamePaused && boundLane >= 0)
+        {
+            // A key released on the pause overlay must not resolve a Long/Slide
+            // note against the frozen audio clock. Resume grants a short window
+            // in which the player can press required lanes again.
+            _lanePressed[boundLane] = false;
+            _engine.SetLaneHeld(boundLane, false);
+            return;
+        }
+
         if (boundLane >= 0)
         {
             EndLaneInput(boundLane, FormatKeyLabel(e.KeyCode), "keyboard");
@@ -1003,8 +1114,29 @@ public sealed partial class GameForm : Form
         }
     }
 
-    private void BeginGame(bool replayPlayback = false)
+    private void BeginGame(
+        bool replayPlayback = false,
+        IReadOnlyList<LaneNote>? validatedReplayChart = null,
+        string? validatedAudioFingerprint = null)
     {
+        if (!replayPlayback)
+            CancelPendingReplayLoad();
+
+        if (!replayPlayback && _screen == UiScreen.SongSelect)
+        {
+            SongEntry? requestedSong = GetSelectedSong();
+            ChartGenerator.ChartGenerationSnapshot generation = ChartGenerator.GetStatus();
+            if (requestedSong is not null && generation.IsRunning && !ChartGenerator.HasAllPrecomputedCharts(requestedSong.Title))
+            {
+                _feedback = "CHART PREPARING";
+                _feedbackTiming = $"{generation.ProcessedSongs}/{generation.TotalSongs}";
+                _feedbackJudgment = null;
+                _feedbackTime = DateTime.Now;
+                Invalidate();
+                return;
+            }
+        }
+
         _feedback = null;
         _feedbackTiming = null;
         _feedbackJudgment = null;
@@ -1012,25 +1144,43 @@ public sealed partial class GameForm : Form
         _lastComboMilestone = 0;
         _inputLogEvents.Clear();
         _isReplayPlayback = replayPlayback;
+        _replayEventIndex = 0;
         if (!replayPlayback)
         {
             _activeReplay = null;
-            _replayEventIndex = 0;
+            _replayRecordingInvalidReason = string.Empty;
         }
         _isGamePaused = false;
         _gameFailedByGauge = false;
         _grooveGauge = GetGaugeRule(_songSelectDifficultyIndex).Start;
         _gameDrawFrameCount = 0;
+        _lastGameDrawSampleFrame = 0;
         _lastGameDrawAllocatedBytes = 0;
+        _lastPlaybackPositionSeconds = 0f;
         _lastAllocationLogTime = DateTime.Now;
         _gdiMonitor.Start(replayPlayback ? "replay" : "game");
         Array.Clear(_lanePressed);
+        Array.Clear(_pauseHeldLaneAwaitingKeyUp);
         _mouseHeldLane = -1;
         ApplySettingsToRuntime();
         _audio.StopAllSounds();
         SongEntry? selectedSong = _screen == UiScreen.SongSelect ? GetSelectedSong() : null;
+        CancelSessionAudioFingerprint();
+        _sessionAudioFingerprint = validatedAudioFingerprint ?? string.Empty;
+        if (selectedSong is not null && string.IsNullOrWhiteSpace(_sessionAudioFingerprint))
+        {
+            string audioPath = selectedSong.FilePath;
+            string songId = selectedSong.SongId;
+            _sessionAudioFingerprintCancellation = new CancellationTokenSource();
+            CancellationToken cancellationToken = _sessionAudioFingerprintCancellation.Token;
+            // Hash during the three-second countdown so large WAV files do not
+            // freeze the UI. SaveReplayRecord joins this task at session end.
+            _sessionAudioFingerprintTask = BuildSessionAudioFingerprintAsync(audioPath, songId, cancellationToken);
+        }
         LoadBgaForSong(selectedSong);
-        _selectedChartNotes = LoadShiftedChartForCurrentLaneMode(selectedSong);
+        _selectedChartNotes = replayPlayback && validatedReplayChart is not null
+            ? validatedReplayChart
+            : LoadShiftedChartForCurrentLaneMode(selectedSong);
 
         // 시작 후 3초간 노트 없이 준비 시간 확보
         _countdownSeconds = 3;
@@ -1049,14 +1199,50 @@ public sealed partial class GameForm : Form
             .ToList();
     }
 
-    private void StartReplayForSelectedSong()
+    private async void StartReplayForSelectedSong()
     {
         SongEntry? song = GetSelectedSong();
         if (song is null)
             return;
 
-        ReplayRecord? replay = _replayStore.LoadLatest(song.SongId, _songSelectDifficultyIndex, LaneCount);
-        if (replay is null || replay.Events.Count == 0)
+        CancelPendingReplayLoad();
+        _replayLoadCancellation = new CancellationTokenSource();
+        CancellationToken cancellationToken = _replayLoadCancellation.Token;
+        int requestGeneration = _replayLoadGeneration;
+        string requestedSongId = song.SongId;
+        int requestedDifficultyIndex = _songSelectDifficultyIndex;
+        int requestedLaneCount = LaneCount;
+        _feedback = "CHECKING REPLAY";
+        _feedbackTime = DateTime.Now;
+        Invalidate();
+
+        IReadOnlyList<ReplayRecord> replayCandidates;
+        try
+        {
+            replayCandidates = await Task.Run(() =>
+                _replayStore.LoadCandidates(requestedSongId, requestedDifficultyIndex, requestedLaneCount, cancellationToken),
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            if (!IsReplayRequestCurrent(requestGeneration, requestedSongId, requestedDifficultyIndex, requestedLaneCount))
+                return;
+
+            _feedback = "REPLAY CHECK FAILED";
+            _feedbackTime = DateTime.Now;
+            AppLogger.Error($"Failed to prepare replay for {requestedSongId}.", ex);
+            Invalidate();
+            return;
+        }
+
+        if (!IsReplayRequestCurrent(requestGeneration, requestedSongId, requestedDifficultyIndex, requestedLaneCount))
+            return;
+
+        if (replayCandidates.Count == 0)
         {
             _feedback = "NO REPLAY";
             _feedbackTime = DateTime.Now;
@@ -1064,9 +1250,122 @@ public sealed partial class GameForm : Form
             return;
         }
 
+        string currentAudioFingerprint;
+        try
+        {
+            currentAudioFingerprint = await ReplayCompatibility.BuildAudioFingerprintAsync(song.FilePath, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            if (!IsReplayRequestCurrent(requestGeneration, requestedSongId, requestedDifficultyIndex, requestedLaneCount))
+                return;
+
+            _feedback = "REPLAY AUDIO CHECK FAILED";
+            _feedbackTime = DateTime.Now;
+            AppLogger.Error($"Failed to fingerprint replay audio for {requestedSongId}.", ex);
+            Invalidate();
+            return;
+        }
+
+        if (!IsReplayRequestCurrent(requestGeneration, requestedSongId, requestedDifficultyIndex, requestedLaneCount))
+            return;
+
+        ReplayRecord? replay = null;
+        ReplayValidationResult validation = default;
+        ReplayValidationResult newestFailure = default;
+        bool hasNewestFailure = false;
+        foreach (ReplayRecord candidate in replayCandidates)
+        {
+            validation = ReplayCompatibility.ValidateForPlayback(
+                candidate,
+                requestedSongId,
+                requestedDifficultyIndex,
+                requestedLaneCount,
+                currentAudioFingerprint);
+            if (!validation.CanPlay)
+            {
+                if (!hasNewestFailure)
+                {
+                    newestFailure = validation;
+                    hasNewestFailure = true;
+                }
+                continue;
+            }
+
+            replay = candidate;
+            break;
+        }
+
+        if (replay is null)
+        {
+            validation = hasNewestFailure ? newestFailure : validation;
+            _feedback = validation.UserMessage;
+            _feedbackTime = DateTime.Now;
+            AppLogger.Info($"Replay blocked for {requestedSongId}: {validation.UserMessage}");
+            Invalidate();
+            return;
+        }
+
         _activeReplay = replay;
         _replayEventIndex = 0;
-        BeginGame(replayPlayback: true);
+        CancelPendingReplayLoad();
+        BeginGame(
+            replayPlayback: true,
+            validatedReplayChart: replay.Chart,
+            validatedAudioFingerprint: currentAudioFingerprint);
+    }
+
+    private bool IsReplayRequestCurrent(int generation, string songId, int difficultyIndex, int laneCount)
+    {
+        if (IsDisposed || generation != _replayLoadGeneration || _screen != UiScreen.SongSelect ||
+            _isCountdownActive || _engine.IsRunning ||
+            _songSelectDifficultyIndex != difficultyIndex || LaneCount != laneCount)
+        {
+            return false;
+        }
+
+        SongEntry? selectedSong = GetSelectedSong();
+        return selectedSong is not null && string.Equals(selectedSong.SongId, songId, StringComparison.Ordinal);
+    }
+
+    private void CancelPendingReplayLoad()
+    {
+        _replayLoadGeneration++;
+        _replayLoadCancellation?.Cancel();
+        _replayLoadCancellation?.Dispose();
+        _replayLoadCancellation = null;
+    }
+
+    private void CancelSessionAudioFingerprint()
+    {
+        _sessionAudioFingerprintCancellation?.Cancel();
+        _sessionAudioFingerprintCancellation?.Dispose();
+        _sessionAudioFingerprintCancellation = null;
+        _sessionAudioFingerprintTask = null;
+    }
+
+    private static async Task<string> BuildSessionAudioFingerprintAsync(
+        string audioPath,
+        string songId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ReplayCompatibility.BuildAudioFingerprintAsync(audioPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Failed to fingerprint session audio for {songId}.", ex);
+            return string.Empty;
+        }
     }
 
     private bool ShouldEndAfterChartComplete()
@@ -1078,27 +1377,47 @@ public sealed partial class GameForm : Form
         return (DateTime.Now - _chartCompleteTime).TotalSeconds >= waitSeconds;
     }
 
-    private void ProcessReplayPlayback()
+    private void UpdateReplayPlayback(float deltaTime, float? playbackPositionSeconds)
     {
         if (!_isReplayPlayback || _activeReplay is null)
             return;
 
+        float startChartTime = _engine.CurrentChartTime;
+        float targetChartTime = playbackPositionSeconds.HasValue && float.IsFinite(playbackPositionSeconds.GetValueOrDefault())
+            ? Math.Max(startChartTime, playbackPositionSeconds.GetValueOrDefault() - _engine.AudioOffsetSeconds)
+            : startChartTime + Math.Max(0f, deltaTime);
         List<InputLogEvent> events = _activeReplay.Events;
-        while (_replayEventIndex < events.Count && events[_replayEventIndex].Time <= _engine.CurrentChartTime)
+        while (_replayEventIndex < events.Count && events[_replayEventIndex].Time <= targetChartTime)
         {
             InputLogEvent input = events[_replayEventIndex++];
             if (input.Lane < 0 || input.Lane >= LaneCount)
                 continue;
 
+            // Advance only to the recorded event time first. Advancing to the
+            // current audio sample before this input could auto-miss or complete
+            // a note and make an otherwise deterministic replay frame-dependent.
+            _engine.Update(0f, input.Time + _engine.AudioOffsetSeconds);
+            if (!_engine.IsRunning)
+                return;
+
             if (input.KeyDown)
-                BeginLaneInput(input.Lane, input.Input, "replay");
+                BeginLaneInput(input.Lane, input.Input, "replay", input.Time);
             else
-                EndLaneInput(input.Lane, input.Input, "replay");
+                EndLaneInput(input.Lane, input.Input, "replay", input.Time);
+
+            if (!_engine.IsRunning)
+                return;
         }
+
+        if (playbackPositionSeconds.HasValue && float.IsFinite(playbackPositionSeconds.GetValueOrDefault()))
+            _engine.Update(deltaTime, playbackPositionSeconds);
+        else
+            _engine.Update(Math.Max(0f, targetChartTime - _engine.CurrentChartTime), null);
     }
 
     private void EndGame()
     {
+        ReplayRecord? completedReplay = _isReplayPlayback ? _activeReplay : null;
         _gdiMonitor.Stop(_isReplayPlayback ? "replay" : "game");
         // Capture results before stopping engine
         _analyzeScore = _engine.Score.Score;
@@ -1116,12 +1435,25 @@ public sealed partial class GameForm : Form
         _analyzeAccuracy = _engine.Score.TotalJudgedNotes > 0 ? _engine.Score.Accuracy : 0f;
         _analyzeGrooveGauge = _grooveGauge;
         _analyzeGaugeClearThreshold = GetGaugeRule(_songSelectDifficultyIndex).ClearThreshold;
-        _analyzePlayMode = PlayModeLabels[Math.Clamp(_playModeIndex, 0, PlayModeLabels.Length - 1)];
+        _analyzePlayMode = PlayModeLabels[Math.Clamp(EffectivePlayModeIndex, 0, PlayModeLabels.Length - 1)];
         _analyzeClearType = GetSessionClearType();
         _analyzeGrade = ScoreManager.CalculateGrade(_analyzeAccuracy, _engine.Score.MissCount, _engine.Score.MaxCombo, _analyzeClearType);
+        float chartStartTime = _selectedChartNotes.Count > 0 ? _selectedChartNotes.Min(note => note.Time) : 0f;
+        float chartEndTime = _selectedChartNotes.Count > 0 ? _selectedChartNotes.Max(note => note.Time + Math.Max(0f, note.Duration)) : Math.Max(1f, _engine.CurrentChartTime);
+        _analyzeFeedback = ResultFeedbackSummary.Create(
+            _engine.Score,
+            _engine.JudgmentHistory,
+            chartStartTime,
+            chartEndTime);
+        if (_analyzeFeedback.RecordedMissCount != _engine.Score.MissCount)
+            AppLogger.Info($"Judgment history mismatch: score misses={_engine.Score.MissCount}, recorded misses={_analyzeFeedback.RecordedMissCount}");
+        _analyzeReplayStatus = completedReplay is null
+            ? string.Empty
+            : ReplayCompatibility.CompareResult(completedReplay, _engine.Score, _analyzeGrade, _analyzeClearType, _engine.JudgmentHistory);
 
         // Store song info
         SongEntry? song = GetSelectedSong();
+        _analyzeSongId = song?.SongId ?? string.Empty;
         _analyzeSongTitle = song?.Title ?? "Unknown";
         _analyzeSongArtist = song is null ? "Unknown" : BuildSongMetadata(song, includeBest: true);
         _analyzeSongArtworkStyle = song?.ArtworkStyle ?? 0;
@@ -1134,10 +1466,43 @@ public sealed partial class GameForm : Form
         SongScoreRecord? songScore = null;
         if (!_isReplayPlayback)
         {
-            string replayPath = SaveReplayRecord(song);
-            songScore = RecordSongScore(song, replayPath);
-            RecordAchievementProgress(song);
-            _inputLogStore.Save(_inputLogEvents);
+            string replayPath = string.Empty;
+            try
+            {
+                replayPath = SaveReplayRecord(song);
+            }
+            catch (Exception ex)
+            {
+                _analyzeReplayStatus = "REPLAY SAVE FAILED";
+                AppLogger.Error("Failed to save replay during game cleanup.", ex);
+            }
+
+            try
+            {
+                songScore = RecordSongScore(song, replayPath);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Failed to save song score during game cleanup.", ex);
+            }
+
+            try
+            {
+                RecordAchievementProgress(song);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Failed to save achievement progress during game cleanup.", ex);
+            }
+
+            try
+            {
+                _inputLogStore.Save(_inputLogEvents);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Failed to save input log during game cleanup.", ex);
+            }
         }
         _engine.Stop();
         _isCountdownActive = false;
@@ -1145,10 +1510,13 @@ public sealed partial class GameForm : Form
         _isReplayPlayback = false;
         _activeReplay = null;
         _replayEventIndex = 0;
+        _sessionAudioFingerprint = string.Empty;
+        CancelSessionAudioFingerprint();
         _gameBgaImage?.Dispose();
         _gameBgaImage = null;
         _gameBgaPath = string.Empty;
         Array.Clear(_lanePressed);
+        Array.Clear(_pauseHeldLaneAwaitingKeyUp);
         _mouseHeldLane = -1;
 
         // Update highest score after recording
@@ -1170,10 +1538,53 @@ public sealed partial class GameForm : Form
         if (_isReplayPlayback || song is null || _inputLogEvents.Count == 0)
             return string.Empty;
 
+        if (!string.IsNullOrWhiteSpace(_replayRecordingInvalidReason))
+        {
+            _analyzeReplayStatus = $"REPLAY NOT SAVED - {_replayRecordingInvalidReason}";
+            AppLogger.Info($"Replay recording skipped for {song.SongId}: {_replayRecordingInvalidReason}");
+            return string.Empty;
+        }
+
+        if (_playModeIndex == 2)
+        {
+            _analyzeReplayStatus = "REPLAY NOT SAVED - AUTO PLAY";
+            AppLogger.Info($"Replay recording skipped for {song.SongId}: Auto play is timer-driven rather than input-driven.");
+            return string.Empty;
+        }
+
+        if (_selectedChartNotes.Count == 0)
+        {
+            _analyzeReplayStatus = "REPLAY NOT SAVED - NO FIXED CHART";
+            AppLogger.Info($"Replay recording skipped for {song.SongId}: no fixed chart was played.");
+            return string.Empty;
+        }
+
         string difficulty = GetDifficultyLabel(_songSelectDifficultyIndex);
+        if (string.IsNullOrWhiteSpace(_sessionAudioFingerprint) && _sessionAudioFingerprintTask is not null)
+        {
+            try
+            {
+                _sessionAudioFingerprint = _sessionAudioFingerprintTask.GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error($"Failed to fingerprint session audio for {song.SongId}.", ex);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(_sessionAudioFingerprint))
+        {
+            _analyzeReplayStatus = "REPLAY NOT SAVED - AUDIO CHECK FAILED";
+            AppLogger.Info($"Replay recording skipped for {song.SongId}: audio fingerprint was unavailable at session start.");
+            return string.Empty;
+        }
+
         return _replayStore.Save(new ReplayRecord
         {
+            ReplayVersion = ReplayCompatibility.CurrentReplayVersion,
+            GameVersion = ReplayCompatibility.CurrentGameVersion,
             ChartVersion = BuildChartVersion(song),
+            AudioFingerprint = _sessionAudioFingerprint,
             SongId = song.SongId,
             SongTitle = song.Title,
             Artist = song.Artist,
@@ -1187,44 +1598,42 @@ public sealed partial class GameForm : Form
             Accuracy = _analyzeAccuracy,
             Grade = ScoreManager.FormatGrade(_analyzeGrade),
             ClearType = ScoreManager.FormatClearType(_analyzeClearType),
+            Settings = new ReplaySettingsSnapshot
+            {
+                AudioOffsetMs = _audioOffsetMs,
+                NoteSpeedPercent = (int)MathF.Round(_speedMultiplier * 100f),
+                PlayModeIndex = _playModeIndex,
+                GameModeIndex = (int)_gameMode,
+                LaneCount = LaneCount,
+            },
+            Result = new ReplayResultSnapshot
+            {
+                Score = _analyzeScore,
+                Accuracy = _analyzeAccuracy,
+                Grade = ScoreManager.FormatGrade(_analyzeGrade),
+                ClearType = ScoreManager.FormatClearType(_analyzeClearType),
+                PerfectCount = _analyzePerfectCount,
+                GreatCount = _analyzeGreatCount,
+                BetterCount = _analyzeBetterCount,
+                GoodCount = _analyzeGoodCount,
+                BadCount = _analyzeBadCount,
+                MissCount = _analyzeMissCount,
+                MaxCombo = _analyzeMaxCombo,
+                MaxMissStreak = _analyzeMissStreak,
+            },
+            Chart = _selectedChartNotes.ToList(),
             Events = _inputLogEvents.ToList(),
+            Judgments = _engine.JudgmentHistory.ToList(),
         });
     }
 
-    private string BuildChartVersion(SongEntry song)
+    private string BuildChartVersion(SongEntry song, IReadOnlyList<LaneNote>? chartNotes = null)
     {
-        unchecked
-        {
-            int hash = 17;
-            hash = AddStableHash(hash, song.SongId);
-            hash = hash * 31 + _songSelectDifficultyIndex;
-            hash = hash * 31 + LaneCount;
-            foreach (LaneNote note in _selectedChartNotes)
-            {
-                hash = hash * 31 + note.Lane;
-                hash = hash * 31 + note.EndLane;
-                hash = hash * 31 + (int)note.Type;
-                hash = AddStableHash(hash, note.Time);
-                hash = AddStableHash(hash, note.Duration);
-            }
-
-            return $"{song.SongId}:{_songSelectDifficultyIndex}:{LaneCount}K:{hash:x8}";
-        }
-    }
-
-    private static int AddStableHash(int hash, string value)
-    {
-        unchecked
-        {
-            foreach (char ch in value)
-                hash = hash * 31 + ch;
-            return hash;
-        }
-    }
-
-    private static int AddStableHash(int hash, float value)
-    {
-        return AddStableHash(hash, value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+        return ReplayCompatibility.BuildChartVersion(
+            song.SongId,
+            _songSelectDifficultyIndex,
+            LaneCount,
+            chartNotes ?? _selectedChartNotes);
     }
 
     private SongScoreRecord? RecordSongScore(SongEntry? song, string replayPath)
@@ -1293,9 +1702,9 @@ public sealed partial class GameForm : Form
         };
     }
 
-    private bool IsPracticeMode => _playModeIndex == (int)PlayMode.Practice;
+    private bool IsPracticeMode => EffectivePlayModeIndex == (int)PlayMode.Practice;
 
-    private bool IsAutoPlayMode => _playModeIndex == (int)PlayMode.Auto;
+    private bool IsAutoPlayMode => EffectivePlayModeIndex == (int)PlayMode.Auto;
 
     private bool IsNoFailPlayMode => IsPracticeMode || IsAutoPlayMode;
 
@@ -1447,7 +1856,6 @@ public sealed partial class GameForm : Form
                 _feedbackTiming = hit.Value.TimingLabel;
                 _feedbackJudgment = hit.Value.Judgment;
                 _feedbackTime = DateTime.Now;
-                _audio.PlayHit(_sfxVolume, hit.Value.Judgment);
                 ApplyGaugeForHitResult(hit.Value);
             }
         }
@@ -1468,7 +1876,9 @@ public sealed partial class GameForm : Form
     {
         _isCountdownActive = false;
         _isGamePaused = false;
+        ClearReplayPlaybackState();
         Array.Clear(_lanePressed);
+        Array.Clear(_pauseHeldLaneAwaitingKeyUp);
         _mouseHeldLane = -1;
         _audio.StopAllSounds();
         _audio.PlayMainScreenBgm();
@@ -1477,18 +1887,40 @@ public sealed partial class GameForm : Form
         _screen = UiScreen.MainMenu;
     }
 
+    private void ClearReplayPlaybackState()
+    {
+        _isReplayPlayback = false;
+        _activeReplay = null;
+        _replayEventIndex = 0;
+        _sessionAudioFingerprint = string.Empty;
+        CancelSessionAudioFingerprint();
+    }
+
     private void PauseGame()
     {
         if (!_engine.IsRunning || _isGamePaused)
             return;
 
+        if (!_audio.PauseInGameBgm())
+        {
+            _feedback = "PAUSE FAILED";
+            _feedbackTiming = "AUDIO DEVICE";
+            _feedbackJudgment = null;
+            _feedbackTime = DateTime.Now;
+            return;
+        }
+
         _isGamePaused = true;
         _frameStopwatch.Restart();
-        Array.Clear(_lanePressed);
-        _mouseHeldLane = -1;
-        for (int i = 0; i < 7; i++)
-            _engine.SetLaneHeld(i, false);
-        _audio.PauseInGameBgm();
+        if (!_isReplayPlayback)
+        {
+            for (int i = 0; i < _pauseHeldLaneAwaitingKeyUp.Length; i++)
+                _pauseHeldLaneAwaitingKeyUp[i] = _lanePressed[i];
+            Array.Clear(_lanePressed);
+            _mouseHeldLane = -1;
+            for (int i = 0; i < 7; i++)
+                _engine.SetLaneHeld(i, false);
+        }
         Invalidate();
     }
 
@@ -1497,9 +1929,20 @@ public sealed partial class GameForm : Form
         if (!_engine.IsRunning || !_isGamePaused)
             return;
 
+        if (!_audio.ResumeInGameBgm())
+        {
+            _feedback = "RESUME FAILED";
+            _feedbackTiming = "AUDIO DEVICE";
+            _feedbackJudgment = null;
+            _feedbackTime = DateTime.Now;
+            Invalidate();
+            return;
+        }
+
         _isGamePaused = false;
         _frameStopwatch.Restart();
-        _audio.ResumeInGameBgm();
+        if (!_isReplayPlayback)
+            _engine.GrantHoldResumeGrace();
         Invalidate();
     }
 
@@ -1536,6 +1979,9 @@ public sealed partial class GameForm : Form
             return;
         }
 
+        if (_engine.IsRunning)
+            InvalidateReplayRecording("LANE MODE CHANGED");
+
         _laneModeIndex = targetIndex;
         Array.Clear(_lanePressed);
         _mouseHeldLane = -1;
@@ -1560,6 +2006,15 @@ public sealed partial class GameForm : Form
         SaveUserSettings();
     }
 
+    private void InvalidateReplayRecording(string reason)
+    {
+        if (!_engine.IsRunning || _isReplayPlayback || !string.IsNullOrWhiteSpace(_replayRecordingInvalidReason))
+            return;
+
+        _replayRecordingInvalidReason = reason;
+        AppLogger.Info($"Replay recording invalidated: {reason}");
+    }
+
     // ── 렌더링 ────────────────────────────────────────────────────────────────
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -1579,12 +2034,14 @@ public sealed partial class GameForm : Form
         if (_isCountdownActive)
         {
             DrawCountdown(g);
+            FlushDwmIfEnabled();
             return;
         }
 
         if (_engine.IsRunning)
         {
             DrawGame(g);
+            FlushDwmIfEnabled();
             return;
         }
 
@@ -1602,10 +2059,7 @@ public sealed partial class GameForm : Form
         else if (_screen == UiScreen.MainMenu) DrawMenu(g);
         DrawKeyboardFocus(g, clientCoordinates: false);
 
-        if (_vsyncEnabled)
-        {
-            try { DwmFlush(); } catch { /* DWM not available */ }
-        }
+        FlushDwmIfEnabled();
         g.Restore(state);
 
         if (_activeAchievementToast is not null)
@@ -1652,8 +2106,8 @@ public sealed partial class GameForm : Form
             "InputCalibration" => "Input latency calibration screen. Press keys to match the metronome.",
             "KeyBindings" => "Key binding screen. Assign lane keys and test simultaneous input.",
             "SongSelect" => "Song selection screen. Press Tab to move through search, songs, difficulty, controls, and play.",
-            "Analyze" => "Results screen. Review score, combo, judgments, miss streak, and press OK to return.",
-            "Achievement" => "Achievements screen. Press Tab to choose a category or go back.",
+            "Analyze" => "Results screen. Review score, timing, miss causes, and choose Retry, Song Select, or Next.",
+            "Achievement" => "Player statistics screen. Review recent performance and press Tab to open details, settings, or return home.",
             "AchievementDetail" => "Achievement detail screen. Press Tab to choose tabs, pages, or back.",
             "In Game" => "Gameplay screen. Use lane keys to hit notes. Press Escape or P to pause.",
             _ => "Main menu. Open settings, song select, or achievements.",
@@ -1950,15 +2404,12 @@ public sealed partial class GameForm : Form
         var playArea = GetPlayAreaBounds();
         int w    = ClientSize.Width;
         int h    = ClientSize.Height;
-        int hitY = h - (int)GameEngine.HitZoneOffset;
+        int hitY = (int)MathF.Round(GameEngine.GetHitZoneY(h));
         int laneWidth = playArea.Width / LaneCount;
 
         // ── 배경: 어두운 그라데이션 ──
         DrawGameplayBackground(g, w, h, playArea);
-        DrawPerspectivePlayfield(g, playArea, hitY);
-
-        // ── 히트존 글로우 이펙트 ──
-        DrawHitZoneGlow(g, playArea, hitY);
+        DrawPerspectiveLaneHighlights(g, playArea, hitY);
 
         // ── 피아노 키 스타일 히트존 ──
         DrawPianoKeys(g, playArea, hitY, laneWidth);
@@ -2023,14 +2474,81 @@ public sealed partial class GameForm : Form
         _gameDrawFrameCount++;
         long allocated = Math.Max(0, GC.GetAllocatedBytesForCurrentThread() - allocationStart);
         _lastGameDrawAllocatedBytes = allocated;
-        if ((DateTime.Now - _lastAllocationLogTime).TotalSeconds < 5)
+        double sampleSeconds = (DateTime.Now - _lastAllocationLogTime).TotalSeconds;
+        if (sampleSeconds < 5)
             return;
 
+        long sampleFrames = _gameDrawFrameCount - _lastGameDrawSampleFrame;
+        float sampledFps = sampleSeconds > 0d ? (float)(sampleFrames / sampleSeconds) : 0f;
+        _lastGameDrawSampleFrame = _gameDrawFrameCount;
         _lastAllocationLogTime = DateTime.Now;
-        AppLogger.Info($"Game draw allocation sample: frame={_gameDrawFrameCount}, lastFrameBytes={allocated}, gdi={GdiResourceMonitor.GetCurrentGdiObjectCount()}");
+        AppLogger.Info($"Game draw performance sample: frame={_gameDrawFrameCount}, fps={sampledFps:F1}, lastFrameBytes={allocated}, gdi={GdiResourceMonitor.GetCurrentGdiObjectCount()}");
     }
 
     private void DrawGameplayBackground(Graphics g, int width, int height, Rectangle playArea)
+    {
+        DrawCachedGameplayBackground(g, width, height, playArea);
+
+        float position = _lastPlaybackPositionSeconds > 0f ? _lastPlaybackPositionSeconds : _engine.CurrentChartTime;
+        float motion = _reducedMotionEnabled ? 0f : position;
+        float groove = Math.Clamp(_grooveGauge / 100f, 0.2f, 1f);
+        Color accent = GetAccentColor();
+        using var bandBrush = new SolidBrush(Color.FromArgb((int)(10 + groove * 26), accent));
+        using var starBrush = new SolidBrush(Color.White);
+        int starCount = _renderQualityMode switch { 0 => 42, 1 => 78, _ => 110 };
+        for (int i = 0; i < starCount; i++)
+        {
+            int hash = i * 1103515245 + 12345;
+            float x = Math.Abs(hash % 10000) / 10000f * width;
+            float y = Math.Abs((hash / 97) % 10000) / 10000f * height * 0.82f;
+            float twinkle = _reducedMotionEnabled ? 0.6f : 0.48f + MathF.Sin(motion * (0.6f + i % 5 * 0.09f) + i) * 0.28f;
+            int alpha = Math.Clamp((int)(38f + twinkle * 82f), 24, 130);
+            starBrush.Color = Color.FromArgb(alpha, 190, 205, 255);
+            float size = (i % 11 == 0 ? 2.1f : 1.2f) * GameScale;
+            g.FillEllipse(starBrush, x, y, size, size);
+        }
+
+        float horizon = height * 0.70f;
+        for (int i = 0; i < 4; i++)
+        {
+            float phase = motion * (0.7f + i * 0.12f) + i * 1.4f;
+            float y = horizon - 120f * GameScale + i * 48f * GameScale + MathF.Sin(phase) * 10f * GameScale;
+            RectangleF band = new(0, y, width, Math.Max(1f, 2f * GameScale));
+            g.FillRectangle(bandBrush, band);
+        }
+    }
+
+    private void FlushDwmIfEnabled()
+    {
+        if (!_vsyncEnabled)
+            return;
+
+        try { DwmFlush(); } catch { /* DWM not available */ }
+    }
+
+    private void DrawCachedGameplayBackground(Graphics g, int width, int height, Rectangle playArea)
+    {
+        Color accent = GetAccentColor();
+        string cacheKey = $"{width}x{height}|{playArea.X},{playArea.Y},{playArea.Width},{playArea.Height}|{LaneCount}|{accent.ToArgb()}|{_gameBgaPath}|{_darkModeEnabled}|{_highContrastEnabled}|{_laneBrightness}|{_colorVisionMode}|{_visualSkinName}";
+        if (_gameBackgroundCache is null || !string.Equals(_gameBackgroundCacheKey, cacheKey, StringComparison.Ordinal))
+        {
+            _gameBackgroundCache?.Dispose();
+            _gameBackgroundCache = new Bitmap(Math.Max(1, width), Math.Max(1, height), PixelFormat.Format32bppPArgb);
+            using Graphics backgroundGraphics = Graphics.FromImage(_gameBackgroundCache);
+            backgroundGraphics.SmoothingMode = SmoothingMode.HighSpeed;
+            backgroundGraphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
+            backgroundGraphics.CompositingQuality = CompositingQuality.HighSpeed;
+            DrawGameplayBackgroundBase(backgroundGraphics, width, height, playArea, accent);
+            int hitY = (int)MathF.Round(GameEngine.GetHitZoneY(height));
+            DrawPerspectivePlayfieldBase(backgroundGraphics, playArea, hitY);
+            DrawHitZoneGlow(backgroundGraphics, playArea, hitY);
+            _gameBackgroundCacheKey = cacheKey;
+        }
+
+        g.DrawImageUnscaled(_gameBackgroundCache, 0, 0);
+    }
+
+    private void DrawGameplayBackgroundBase(Graphics g, int width, int height, Rectangle playArea, Color accent)
     {
         using (var bgBrush = new LinearGradientBrush(
             new Point(0, 0), new Point(0, height),
@@ -2043,24 +2561,6 @@ public sealed partial class GameForm : Form
             DrawImageAlpha(g, _gameBgaImage, dest, 92);
             using var shade = new SolidBrush(Color.FromArgb(158, 2, 4, 12));
             g.FillRectangle(shade, 0, 0, width, height);
-        }
-
-        float position = _audio.GetInGameBgmPositionSeconds() ?? _engine.CurrentChartTime;
-        float motion = _reducedMotionEnabled ? 0f : position;
-        float groove = Math.Clamp(_grooveGauge / 100f, 0.2f, 1f);
-        Color accent = GetAccentColor();
-        using var bandBrush = new SolidBrush(Color.FromArgb((int)(10 + groove * 26), accent));
-
-        for (int i = 0; i < 140; i++)
-        {
-            int hash = i * 1103515245 + 12345;
-            float x = Math.Abs(hash % 10000) / 10000f * width;
-            float y = Math.Abs((hash / 97) % 10000) / 10000f * height * 0.82f;
-            float twinkle = _reducedMotionEnabled ? 0.6f : 0.48f + MathF.Sin(motion * (0.6f + i % 5 * 0.09f) + i) * 0.28f;
-            int alpha = Math.Clamp((int)(38f + twinkle * 82f), 24, 130);
-            using var star = new SolidBrush(Color.FromArgb(alpha, 190, 205, 255));
-            float size = (i % 11 == 0 ? 2.1f : 1.2f) * GameScale;
-            g.FillEllipse(star, x, y, size, size);
         }
 
         float horizon = height * 0.70f;
@@ -2099,14 +2599,6 @@ public sealed partial class GameForm : Form
             float startX = playArea.Left + playArea.Width / 2f + i * 12f * GameScale;
             float endX = width / 2f + i * width * 0.12f;
             g.DrawLine(roadPen, startX, horizon, endX, height);
-        }
-
-        for (int i = 0; i < 4; i++)
-        {
-            float phase = motion * (0.7f + i * 0.12f) + i * 1.4f;
-            float y = horizon - 120f * GameScale + i * 48f * GameScale + MathF.Sin(phase) * 10f * GameScale;
-            RectangleF band = new(0, y, width, Math.Max(1f, 2f * GameScale));
-            g.FillRectangle(bandBrush, band);
         }
     }
 
@@ -2397,7 +2889,10 @@ public sealed partial class GameForm : Form
                 _isCountdownActive = false;
                 _engine.Stop();
                 _audio.StopAllSounds();
-                BeginGame();
+                BeginGame(
+                    replayPlayback: _isReplayPlayback,
+                    validatedReplayChart: _isReplayPlayback ? _selectedChartNotes : null,
+                    validatedAudioFingerprint: _isReplayPlayback ? _activeReplay?.AudioFingerprint : null);
                 break;
             case 2:
                 _chartCompleteWaiting = false;
@@ -2405,6 +2900,7 @@ public sealed partial class GameForm : Form
                 _isGamePaused = false;
                 _engine.Stop();
                 _audio.StopAllSounds();
+                ClearReplayPlaybackState();
                 Array.Clear(_lanePressed);
                 _mouseHeldLane = -1;
                 ExitGameLowLatencyMode();
@@ -2418,7 +2914,10 @@ public sealed partial class GameForm : Form
         }
     }
 
-    private float GameScale => Math.Max(0.52f, Math.Min(ClientSize.Width / 1680f, ClientSize.Height / 944f));
+    private const float GameplayDesignWidth = 1920f;
+    private const float GameplayDesignHeight = 1080f;
+
+    private float GameScale => Math.Max(0.52f, Math.Min(ClientSize.Width / GameplayDesignWidth, ClientSize.Height / GameplayDesignHeight));
 
     private float PlayfieldTopY => Math.Max(84f * GameScale, ClientSize.Height * 0.13f);
 
@@ -2472,7 +2971,7 @@ public sealed partial class GameForm : Form
         return path;
     }
 
-    private void DrawPerspectivePlayfield(Graphics g, Rectangle playArea, int hitY)
+    private void DrawPerspectivePlayfieldBase(Graphics g, Rectangle playArea, int hitY)
     {
         float topY = PlayfieldTopY;
         float horizonY = topY - 8f * GameScale;
@@ -2502,10 +3001,8 @@ public sealed partial class GameForm : Form
 
         for (int lane = 0; lane < LaneCount; lane++)
         {
-            bool pressed = _lanePressed[lane];
-            bool holding = _engine.Notes.Any(n => n.State == NoteState.Holding && (n.Lane == lane || n.EndLane == lane));
             Color laneColor = GetAccessibleLaneColor(lane);
-            int alpha = pressed ? 72 : holding ? 54 : lane % 2 == 0 ? 16 : 9;
+            int alpha = lane % 2 == 0 ? 16 : 9;
             using var lanePath = new GraphicsPath();
             lanePath.AddPolygon([
                 PerspectivePoint(playArea, lane, topY, hitY),
@@ -2536,6 +3033,46 @@ public sealed partial class GameForm : Form
         g.DrawLine(centerPen, playArea.Left + playArea.Width / 2f, horizonY, playArea.Left + playArea.Width / 2f, hitY);
         using var horizonPen = new Pen(Color.FromArgb(52, accent), Math.Max(0.8f, 1f * GameScale));
         g.DrawLine(horizonPen, playArea.Left - playArea.Width * 0.12f, horizonY, playArea.Right + playArea.Width * 0.12f, horizonY);
+    }
+
+    private void DrawPerspectiveLaneHighlights(Graphics g, Rectangle playArea, int hitY)
+    {
+        Span<bool> holdingLanes = stackalloc bool[7];
+        for (int noteIndex = 0; noteIndex < _engine.Notes.Count; noteIndex++)
+        {
+            Note note = _engine.Notes[noteIndex];
+            if (note.State != NoteState.Holding)
+                continue;
+
+            if (note.Lane >= 0 && note.Lane < holdingLanes.Length)
+                holdingLanes[note.Lane] = true;
+            if (note.EndLane >= 0 && note.EndLane < holdingLanes.Length)
+                holdingLanes[note.EndLane] = true;
+        }
+
+        float topY = PlayfieldTopY;
+        float bottomY = hitY;
+        for (int lane = 0; lane < LaneCount; lane++)
+        {
+            int alpha = _lanePressed[lane] ? 60 : holdingLanes[lane] ? 42 : 0;
+            if (alpha == 0)
+                continue;
+
+            Color laneColor = GetAccessibleLaneColor(lane);
+            using var lanePath = new GraphicsPath();
+            lanePath.AddPolygon([
+                PerspectivePoint(playArea, lane, topY, hitY),
+                PerspectivePoint(playArea, lane + 1, topY, hitY),
+                PerspectivePoint(playArea, lane + 1, bottomY, hitY),
+                PerspectivePoint(playArea, lane, bottomY, hitY),
+            ]);
+            using var laneBrush = new LinearGradientBrush(
+                new RectangleF(playArea.Left, topY, playArea.Width, Math.Max(1f, bottomY - topY)),
+                Color.FromArgb(Math.Max(4, alpha / 3), laneColor),
+                Color.FromArgb(alpha, laneColor),
+                LinearGradientMode.Vertical);
+            g.FillPath(laneBrush, lanePath);
+        }
     }
 
     private void DrawGameFrame(Graphics g, Rectangle playArea)
@@ -2663,16 +3200,14 @@ public sealed partial class GameForm : Form
 
     private void DrawFloatingLaneKeys(Graphics g, Rectangle playArea, int hitY)
     {
-        float keyY = hitY + 38f * GameScale;
         Font font = _renderResources.Font("Segoe UI", Math.Max(14f, 24f * GameScale), FontStyle.Regular);
         SolidBrush textBrush = _renderResources.Brush(Color.FromArgb(236, 242, 255));
         SolidBrush dimBrush = _renderResources.Brush(Color.FromArgb(150, 178, 190, 222));
 
         for (int i = 0; i < LaneCount; i++)
         {
-            float center = (PerspectiveLaneX(playArea, i, hitY, hitY) + PerspectiveLaneX(playArea, i + 1, hitY, hitY)) / 2f;
-            float size = Math.Clamp((PerspectiveLaneX(playArea, i + 1, hitY, hitY) - PerspectiveLaneX(playArea, i, hitY, hitY)) * 0.34f, 42f * GameScale, 72f * GameScale);
-            RectangleF keyRect = new(center - size / 2f, keyY, size, size * 0.82f);
+            RectangleF keyRect = GetFloatingLaneKeyBounds(playArea, hitY, i);
+            float center = keyRect.Left + keyRect.Width / 2f;
             bool pressed = _lanePressed[i];
             Color laneColor = GetAccessibleLaneColor(i);
             using var path = CreateRoundedRect(Rectangle.Round(keyRect), 8f * GameScale);
@@ -2687,7 +3222,7 @@ public sealed partial class GameForm : Form
             DrawCentered(g, LaneLabels[i], font, pressed ? textBrush : dimBrush, (int)center, (int)(keyRect.Top + keyRect.Height * 0.2f));
         }
 
-        Rectangle pauseKey = Rectangle.Round(new RectangleF(38f * GameScale, ClientSize.Height - 78f * GameScale, 46f * GameScale, 40f * GameScale));
+        Rectangle pauseKey = Rectangle.Round(GetPauseKeyBounds());
         using var pausePath = CreateRoundedRect(pauseKey, 6f * GameScale);
         using var pauseFill = new SolidBrush(Color.FromArgb(34, 255, 255, 255));
         using var pauseBorder = new Pen(Color.FromArgb(130, 220, 226, 255), Math.Max(1f, GameScale));
@@ -2696,6 +3231,21 @@ public sealed partial class GameForm : Form
         DrawCentered(g, "II", font, dimBrush, pauseKey.Left + pauseKey.Width / 2, pauseKey.Top + (int)(pauseKey.Height * 0.12f));
         Font hintFont = _renderResources.Font("Segoe UI", Math.Max(8f, 14f * GameScale), FontStyle.Regular);
         DrawSpacedString(g, "ESC PAUSE", hintFont, dimBrush, pauseKey.Right + 28f * GameScale, pauseKey.Top + 11f * GameScale, 4f * GameScale, centered: false);
+    }
+
+    private RectangleF GetFloatingLaneKeyBounds(Rectangle playArea, int hitY, int lane)
+    {
+        float left = PerspectiveLaneX(playArea, lane, hitY, hitY);
+        float right = PerspectiveLaneX(playArea, lane + 1, hitY, hitY);
+        float center = (left + right) / 2f;
+        float size = Math.Clamp((right - left) * 0.34f, 42f * GameScale, 72f * GameScale);
+        return new RectangleF(center - size / 2f, hitY + 38f * GameScale, size, size * 0.82f);
+    }
+
+    private RectangleF GetPauseKeyBounds()
+    {
+        float s = GameScale;
+        return new RectangleF(38f * s, ClientSize.Height - 78f * s, 46f * s, 40f * s);
     }
 
     private void DrawPianoKeys(Graphics g, Rectangle playArea, int hitY, int laneWidth)
@@ -3004,18 +3554,19 @@ public sealed partial class GameForm : Form
 
         DrawSpacedString(g, "MuWorld", logoFont, titleBrush, ClientSize.Width / 2f, 28f * s, 10f * s, centered: true);
 
-        Rectangle art = Rectangle.Round(new RectangleF(32f * s, 28f * s, 70f * s, 70f * s));
+        Rectangle art = Rectangle.Round(GetSongArtworkBounds());
         DrawSongArtwork(g, art, song);
         using (var artBorder = new Pen(Color.FromArgb(145, 225, 232, 255), Math.Max(1f, s)))
             g.DrawRectangle(artBorder, art);
         g.DrawString(song?.Title ?? "Starlight Drive", songFont, titleBrush, art.Right + 20f * s, 38f * s);
         g.DrawString(song?.Artist ?? "Aureon", artistFont, accentBrush, art.Right + 20f * s, 72f * s);
 
-        float current = _audio.GetInGameBgmPositionSeconds() ?? _engine.CurrentChartTime;
+        float current = _lastPlaybackPositionSeconds > 0f ? _lastPlaybackPositionSeconds : _engine.CurrentChartTime;
         float duration = song?.DurationSeconds > 0f ? song.DurationSeconds : _audio.GetInGameBgmDurationSeconds() ?? Math.Max(1f, _selectedChartNotes.Count > 0 ? _selectedChartNotes.Max(n => n.Time + n.Duration) : 138f);
-        DrawProgressRail(g, current, duration, 32f * s, 124f * s, ClientSize.Width * 0.72f);
+        RectangleF progressRail = GetProgressRailBounds();
+        DrawProgressRail(g, current, duration, progressRail.Left, progressRail.Top, progressRail.Width);
 
-        Rectangle difficulty = Rectangle.Round(new RectangleF(ClientSize.Width - 136f * s, 32f * s, 92f * s, 31f * s));
+        Rectangle difficulty = Rectangle.Round(GetDifficultyBadgeBounds());
         using (var path = CreateRoundedRect(difficulty, 5f * s))
         using (var border = new Pen(Color.FromArgb(190, accent), Math.Max(1f, 1.3f * s)))
         using (var fill = new SolidBrush(Color.FromArgb(22, accent)))
@@ -3023,10 +3574,18 @@ public sealed partial class GameForm : Form
             g.FillPath(fill, path);
             g.DrawPath(border, path);
         }
-        DrawSpacedString(g, GetDifficultyLabel(_songSelectDifficultyIndex).ToUpperInvariant(), labelFont, titleBrush, difficulty.Left + difficulty.Width / 2f, difficulty.Top + 7f * s, 3.5f * s, centered: true);
+        DrawFittedSpacedString(
+            g,
+            GetDifficultyLabel(_songSelectDifficultyIndex).ToUpperInvariant(),
+            labelFont,
+            titleBrush,
+            new RectangleF(difficulty.Left + 6f * s, difficulty.Top, difficulty.Width - 12f * s, difficulty.Height),
+            difficulty.Top + 7f * s,
+            3.5f * s,
+            centered: true);
 
         DrawSpeedPanel(g, GetSpeedPanelBounds());
-        DrawScorePanel(g, new RectangleF(ClientSize.Width - 270f * s, 124f * s, 230f * s, 220f * s), score);
+        DrawScorePanel(g, GetScorePanelBounds(), score);
 
         if (score.Combo > 0)
         {
@@ -3059,6 +3618,32 @@ public sealed partial class GameForm : Form
             _cachedStatsMiss = score.MissCount;
             _cachedStatsText = $"P {score.PerfectCount}  GR {score.GreatCount}  G {score.GoodCount}  B {score.BadCount}  M {score.MissCount}";
         }
+    }
+
+    private RectangleF GetSongArtworkBounds()
+    {
+        float s = GameScale;
+        return new RectangleF(32f * s, 28f * s, 70f * s, 70f * s);
+    }
+
+    private RectangleF GetProgressRailBounds()
+    {
+        float s = GameScale;
+        float left = 32f * s;
+        float right = Math.Min(ClientSize.Width * 0.74f, GetScorePanelBounds().Left - 36f * s);
+        return new RectangleF(left, 124f * s, Math.Max(120f * s, right - left), 1f);
+    }
+
+    private RectangleF GetDifficultyBadgeBounds()
+    {
+        float s = GameScale;
+        return new RectangleF(ClientSize.Width - 136f * s, 32f * s, 92f * s, 31f * s);
+    }
+
+    private RectangleF GetScorePanelBounds()
+    {
+        float s = GameScale;
+        return new RectangleF(ClientSize.Width - 270f * s, 124f * s, 230f * s, 220f * s);
     }
 
     private void DrawProgressRail(Graphics g, float current, float duration, float x, float y, float width)
@@ -3097,7 +3682,7 @@ public sealed partial class GameForm : Form
         SolidBrush title = _renderResources.Brush(Color.FromArgb(234, 242, 245, 255));
         DrawSpacedString(g, "HI-SPEED", label, title, bounds.Left + bounds.Width / 2f, bounds.Top + 22f * s, 5f * s, centered: true);
         RectangleF valueBounds = GetSpeedValueBounds(bounds);
-        DrawCentered(g, $"{_speedMultiplier:F1}x", value, title, valueBounds.Left + valueBounds.Width / 2f, valueBounds.Top);
+        DrawCentered(g, $"{EffectiveSpeedMultiplier:F1}x", value, title, valueBounds.Left + valueBounds.Width / 2f, valueBounds.Top);
 
         RectangleF minusButton = GetSpeedMinusButtonBounds(bounds);
         RectangleF plusButton = GetSpeedPlusButtonBounds(bounds);
@@ -3116,7 +3701,7 @@ public sealed partial class GameForm : Form
             g.DrawLine(tickPen, x, railY - tick / 2f, x, railY + tick / 2f);
         }
         using var knobPen = new Pen(Color.FromArgb(220, GetAccentColor()), Math.Max(2f, 2.4f * s));
-        float knobX = railLeft + (railRight - railLeft) * Math.Clamp((_speedMultiplier - 0.5f) / 2.0f, 0f, 1f);
+        float knobX = railLeft + (railRight - railLeft) * Math.Clamp((EffectiveSpeedMultiplier - 0.5f) / 2.0f, 0f, 1f);
         g.DrawLine(knobPen, knobX, railY - 14f * s, knobX, railY + 14f * s);
     }
 
@@ -3166,13 +3751,21 @@ public sealed partial class GameForm : Form
     {
         float s = GameScale;
         Font label = _renderResources.Font("Segoe UI", Math.Max(7f, 12f * s), FontStyle.Regular);
-        Font value = _renderResources.Font("Segoe UI Light", Math.Max(24f, 38f * s), FontStyle.Regular);
+        Font value = _renderResources.Font("Segoe UI Light", Math.Max(18f, 38f * s), FontStyle.Regular);
         Font smallValue = _renderResources.Font("Segoe UI", Math.Max(12f, 18f * s), FontStyle.Regular);
         SolidBrush labelBrush = _renderResources.Brush(Color.FromArgb(176, 214, 220, 238));
         SolidBrush valueBrush = _renderResources.Brush(Color.White);
 
         DrawSpacedString(g, "SCORE", label, labelBrush, bounds.Left, bounds.Top, 4f * s, centered: false);
-        DrawSpacedString(g, score.Score.ToString().PadLeft(7, '0'), value, valueBrush, bounds.Left, bounds.Top + 28f * s, 6f * s, centered: false);
+        DrawFittedSpacedString(
+            g,
+            score.Score.ToString().PadLeft(7, '0'),
+            value,
+            valueBrush,
+            new RectangleF(bounds.Left, bounds.Top, bounds.Width, bounds.Height),
+            bounds.Top + 28f * s,
+            6f * s,
+            centered: false);
         DrawSpacedString(g, "ACCURACY", label, labelBrush, bounds.Left, bounds.Top + 94f * s, 4f * s, centered: false);
         g.DrawString($"{score.Accuracy:F2}%", smallValue, valueBrush, bounds.Left, bounds.Top + 124f * s);
         DrawSpacedString(g, "LIFE", label, labelBrush, bounds.Left, bounds.Top + 166f * s, 4f * s, centered: false);
@@ -3296,10 +3889,10 @@ public sealed partial class GameForm : Form
     {
         (string label, string value)[] chips =
         [
-            ("SPD", $"x{_speedMultiplier:F1}"),
+            ("SPD", $"x{EffectiveSpeedMultiplier:F1}"),
             ("MODE", GetGameModeLabel()),
             ("LANE", $"{LaneCount}K"),
-            ("PLAY", PlayModeLabels[Math.Clamp(_playModeIndex, 0, PlayModeLabels.Length - 1)]),
+            ("PLAY", PlayModeLabels[Math.Clamp(EffectivePlayModeIndex, 0, PlayModeLabels.Length - 1)]),
         ];
 
         int gap = Math.Max(3, (int)ScaleX(4f));
@@ -3320,7 +3913,7 @@ public sealed partial class GameForm : Form
 
             string text = $"{chips[i].label} {chips[i].value}";
             SizeF textSize = g.MeasureString(text, font);
-            Brush brush = i == 1 && _gameMode != GameMode.Normal ? valueBrush : labelBrush;
+            Brush brush = i == 1 && EffectiveGameMode != GameMode.Normal ? valueBrush : labelBrush;
             g.DrawString(text, font, brush, bounds.Left + (bounds.Width - textSize.Width) / 2f, bounds.Top + (bounds.Height - textSize.Height) / 2f);
         }
     }
@@ -3359,7 +3952,7 @@ public sealed partial class GameForm : Form
         Pen thresholdPen = _renderResources.Pen(Color.FromArgb(230, 255, 235, 135), Math.Max(1f, ScaleY(1.4f)));
         g.DrawLine(thresholdPen, thresholdX, gauge.Top - 2, thresholdX, gauge.Bottom + 2);
 
-        string mode = PlayModeLabels[Math.Clamp(_playModeIndex, 0, PlayModeLabels.Length - 1)];
+        string mode = PlayModeLabels[Math.Clamp(EffectivePlayModeIndex, 0, PlayModeLabels.Length - 1)];
         string label = IsNoFailPlayMode
             ? $"{mode}  {_grooveGauge:F0}%"
             : $"GROOVE  {_grooveGauge:F0}% / CLEAR {rule.ClearThreshold:F0}%";
@@ -3461,6 +4054,12 @@ public sealed partial class GameForm : Form
         {
             if (_isGamePaused)
                 HandlePauseOverlayMouseMove(e.Location);
+            return;
+        }
+
+        if (_isCountdownActive)
+        {
+            Cursor = Cursors.Default;
             return;
         }
 
@@ -3723,9 +4322,15 @@ public sealed partial class GameForm : Form
                 return;
             }
 
+            if (_isReplayPlayback)
+                return;
+
             HandleGameplayMouseDown(e.Location);
             return;
         }
+
+        if (_isCountdownActive)
+            return;
 
         if (_screen == UiScreen.Splash)
         {
@@ -3814,7 +4419,8 @@ public sealed partial class GameForm : Form
     {
         if (_engine.IsRunning)
         {
-            HandleGameplayMouseUp();
+            if (!_isReplayPlayback)
+                HandleGameplayMouseUp();
             return;
         }
 
@@ -4072,8 +4678,8 @@ public sealed partial class GameForm : Form
         g.DrawEllipse(pen, icon.Left + MenuS(19f), icon.Top + MenuS(13f), MenuS(16f), MenuS(16f));
         g.DrawArc(pen, icon.Left + MenuS(13f), icon.Top + MenuS(31f), MenuS(28f), MenuS(24f), 204f, 132f);
 
-        DrawSpacedString(g, "PLAYER", font, textBrush, MenuX(104f), MenuY(861f), MenuS(8f), centered: false);
-        g.DrawString("Lv. 1", font, accentBrush, MenuX(105f), MenuY(891f));
+        DrawSpacedString(g, "PLAYER STATS", font, textBrush, MenuX(104f), MenuY(861f), MenuS(5f), centered: false);
+        g.DrawString($"{_playerProgress.TotalGamesPlayed} PLAYS", font, accentBrush, MenuX(105f), MenuY(891f));
 
         if (hovered)
         {
@@ -4189,6 +4795,30 @@ public sealed partial class GameForm : Form
             g.DrawString(part, font, brush, cursor, y);
             cursor += g.MeasureString(part, font).Width + spacing;
         }
+    }
+
+    private void DrawFittedSpacedString(
+        Graphics g,
+        string text,
+        Font preferredFont,
+        Brush brush,
+        RectangleF bounds,
+        float y,
+        float spacing,
+        bool centered)
+    {
+        float preferredWidth = MeasureSpacedString(g, text, preferredFont, spacing);
+        Font fittedFont = preferredFont;
+        float fittedSpacing = spacing;
+        if (preferredWidth > bounds.Width && preferredWidth > 0f)
+        {
+            float ratio = Math.Clamp(bounds.Width / preferredWidth * 0.96f, 0.35f, 1f);
+            fittedFont = _renderResources.Font(preferredFont.FontFamily.Name, Math.Max(7f, preferredFont.Size * ratio), preferredFont.Style);
+            fittedSpacing *= ratio;
+        }
+
+        float x = centered ? bounds.Left + bounds.Width / 2f : bounds.Left;
+        DrawSpacedString(g, text, fittedFont, brush, x, y, fittedSpacing, centered);
     }
 
     private static float MeasureSpacedString(Graphics g, string text, Font font, float spacing)
@@ -4313,12 +4943,13 @@ public sealed partial class GameForm : Form
         _layoutScale = Math.Max(0.35f, Math.Min(sx, sy));
         _layoutOffsetX = Math.Max(0f, (ClientSize.Width - DesignWidth * _layoutScale) / 2f);
         _layoutOffsetY = Math.Max(0f, (ClientSize.Height - DesignHeight * _layoutScale) / 2f);
+        _accessibleScreenKey = string.Empty;
     }
 
     private void ApplySettingsToRuntime()
     {
         ApplySpeedToEngine();
-        _engine.AudioOffsetSeconds = _audioOffsetMs / 1000f;
+        _engine.AudioOffsetSeconds = EffectiveAudioOffsetMs / 1000f;
 
         _audio.SetBgmVolume(_bgmVolume);
         _audio.SetPreviewVolume(_previewVolume);
@@ -4402,7 +5033,8 @@ public sealed partial class GameForm : Form
             WindowHeight = windowSize.Height,
             KeyBindings4K = SerializeKeyBindings(0),
             KeyBindings5K = SerializeKeyBindings(1),
-            KeyBindings7K = SerializeKeyBindings(2),
+            KeyBindings6K = SerializeKeyBindings(2),
+            KeyBindings7K = SerializeKeyBindings(3),
             SplashDurationMs = _splashDurationMs,
             HighContrastEnabled = _highContrastEnabled,
             ColorVisionMode = _colorVisionMode,
@@ -4480,7 +5112,6 @@ public sealed partial class GameForm : Form
             return;
 
         _gamePreviousTimerInterval = _timer.Interval;
-        _timer.Interval = Math.Min(_timer.Interval, FrameRateIntervals[^1]);
         try { timeBeginPeriod(1); } catch { /* Timer precision is best-effort. */ }
         _gameLowLatencyModeActive = true;
     }
@@ -4909,14 +5540,19 @@ public sealed partial class GameForm : Form
     {
         if (disposing)
         {
+            CancelPendingReplayLoad();
+            CancelSessionAudioFingerprint();
             ExitCalibrationLowLatencyMode();
             ExitGameLowLatencyMode();
             FlushPendingUserSettingsSave();
             _timer.Dispose();
             _splashTimer.Dispose();
+            _songFolderWatcher?.Dispose();
+            _songGenerationDebounceTimer?.Dispose();
             _audio.Dispose();
             _renderResources.Dispose();
             _gameBgaImage?.Dispose();
+            _gameBackgroundCache?.Dispose();
             _songSelectPhoto?.Dispose();
         }
         base.Dispose(disposing);

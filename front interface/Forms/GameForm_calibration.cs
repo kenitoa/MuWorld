@@ -294,7 +294,7 @@ public sealed partial class GameForm
     {
         DrawSettingsBackground(g);
 
-        using var titleFont = new Font("Segoe UI", Math.Max(24f, MenuS(44f)), FontStyle.Regular);
+        using var titleFont = new Font("Segoe UI", Math.Max(20f, MenuS(36f)), FontStyle.Regular);
         using var sampleFont = new Font("Segoe UI", Math.Max(20f, MenuS(40f)), FontStyle.Regular);
         using var labelFont = new Font("Segoe UI", Math.Max(8f, MenuS(16f)), FontStyle.Regular);
         using var syncFont = new Font("Segoe UI", Math.Max(22f, MenuS(44f)), FontStyle.Regular);
@@ -305,7 +305,7 @@ public sealed partial class GameForm
         using var accentBrush = new SolidBrush(GetAccentColor());
 
         DrawKeyBindingBackButton(g, GetCalibrationBackButtonBounds());
-        DrawSpacedString(g, "INPUT CALIBRATION", titleFont, titleBrush, MenuX(840f), MenuY(74f), MenuS(14f), centered: true);
+        DrawSpacedString(g, "INPUT CALIBRATION", titleFont, titleBrush, MenuX(840f), MenuY(78f), MenuS(16f), centered: true);
         DrawCalibrationSignalLine(g);
 
         Rectangle panel = GetCalibrationPanelBounds();

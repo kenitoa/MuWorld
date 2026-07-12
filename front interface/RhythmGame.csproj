@@ -4,6 +4,9 @@
     <TargetFramework>net9.0-windows</TargetFramework>
     <AssemblyName>game start</AssemblyName>
     <RootNamespace>RhythmGame</RootNamespace>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationHighDpiMode>DpiUnaware</ApplicationHighDpiMode>
     <Nullable>enable</Nullable>

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MuWorld.SelfTests")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+0c6aac05b7679017b63ead69839155c14eba8260")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b05b222e463b7b93f4e4a3620dd5a11b25fb4975")]
 [assembly: System.Reflection.AssemblyProductAttribute("MuWorld.SelfTests")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MuWorld.SelfTests")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

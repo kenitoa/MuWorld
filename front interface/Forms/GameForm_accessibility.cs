@@ -41,7 +41,9 @@ public sealed partial class GameForm
         public override AccessibleObject? GetFocused()
         {
             owner.RebuildAccessibleNodes();
-            return owner._keyboardFocusIndex >= 0 && owner._keyboardFocusIndex < owner._accessibleNodes.Count
+            return owner._keyboardFocusIndex >= 0 &&
+                owner._keyboardFocusIndex < owner._accessibleNodes.Count &&
+                owner.IsAccessibleNodeInteractive(owner._accessibleNodes[owner._keyboardFocusIndex])
                 ? new AccessibleNodeObject(owner, owner._keyboardFocusIndex)
                 : base.GetFocused();
         }
@@ -76,6 +78,9 @@ public sealed partial class GameForm
         {
             get
             {
+                if (!owner.IsAccessibleNodeInteractive(Node))
+                    return AccessibleStates.None;
+
                 AccessibleStates state = AccessibleStates.Focusable;
                 if (owner._keyboardFocusIndex == index)
                     state |= AccessibleStates.Focused;
@@ -99,24 +104,46 @@ public sealed partial class GameForm
 
         public override void DoDefaultAction()
         {
+            if (!owner.IsAccessibleNodeInteractive(Node))
+                return;
+
             owner.FocusAccessibleNode(index, announce: false);
             owner.InvokeAccessibleNode(index);
         }
 
         public override void Select(AccessibleSelection flags)
         {
-            if ((flags & AccessibleSelection.TakeFocus) != 0)
+            if ((flags & AccessibleSelection.TakeFocus) != 0 && owner.IsAccessibleNodeInteractive(Node))
                 owner.FocusAccessibleNode(index, announce: false);
         }
 
-        public override string DefaultAction => Node?.Adjust is not null ? "Adjust" : "Press";
+        public override string DefaultAction => Node switch
+        {
+            { Adjust: not null } => "Adjust",
+            { Invoke: not null } => "Press",
+            _ => string.Empty,
+        };
     }
 
     private void RebuildAccessibleNodes()
     {
+        int countdownRemainingSeconds = GetAccessibleCountdownRemainingSeconds();
         string screenKey = _engine.IsRunning
-            ? _isGamePaused ? "Pause" : "InGame"
-            : _screen == UiScreen.Settings ? $"{_screen}:{_settingsTabIndex}" : _screen.ToString();
+            ? _isGamePaused
+                ? $"Pause:{_engine.Score.Score}:{_engine.Score.TotalJudgedNotes}"
+                : $"InGame:{_engine.Score.Score}:{_engine.Score.TotalJudgedNotes}"
+            : _isCountdownActive
+                ? $"Countdown:{countdownRemainingSeconds}"
+                : _screen switch
+                {
+                    UiScreen.Settings => $"{_screen}:{_settingsTabIndex}",
+                    UiScreen.SongSelect => $"{_screen}:{_songSelectPageIndex}:{_songSelectSelectedIndex}:{_songSelectDifficultyIndex}:{_laneModeIndex}:{_songFavoritesOnly}:{_songSearchQuery}",
+                    UiScreen.KeyBindings => $"{_screen}:{_keyBindingModeIndex}",
+                    UiScreen.AchievementDetail => $"{_screen}:{_achievementDetailTabIndex}:{_achievementDetailPageIndex}",
+                    UiScreen.Analyze => $"{_screen}:{_analyzeScore}:{_analyzeAccuracy:F2}:{_analyzeReplayStatus}",
+                    _ => _screen.ToString(),
+                };
+        screenKey += $":{ClientSize.Width}x{ClientSize.Height}";
 
         if (screenKey == _accessibleScreenKey && _accessibleNodes.Count > 0)
             return;
@@ -135,12 +162,37 @@ public sealed partial class GameForm
             return;
         }
 
+        if (_engine.IsRunning)
+        {
+            AddAccessibleNode(
+                "Gameplay",
+                $"Playing {LaneCount} key chart. Score {_engine.Score.Score}. Accuracy {_engine.Score.Accuracy:F2} percent. Press Escape or P to pause.",
+                new Rectangle(Point.Empty, ClientSize),
+                AccessibleRole.Graphic,
+                null,
+                clientCoordinates: true);
+            return;
+        }
+
+        if (_isCountdownActive)
+        {
+            string countdownUnit = countdownRemainingSeconds == 1 ? "second" : "seconds";
+            AddAccessibleNode(
+                "Game countdown",
+                $"Chart starts in {countdownRemainingSeconds} {countdownUnit}. Press Escape to cancel.",
+                new Rectangle(Point.Empty, ClientSize),
+                AccessibleRole.StaticText,
+                null,
+                clientCoordinates: true);
+            return;
+        }
+
         switch (_screen)
         {
             case UiScreen.MainMenu:
                 AddAccessibleNode("Play", "Open song select.", GetMenuActionButtonBounds(1), AccessibleRole.PushButton, () => OpenMainMenuAction(1));
                 AddAccessibleNode("Settings", "Open settings.", GetMenuTopSettingsButtonBounds(), AccessibleRole.PushButton, () => OpenMainMenuAction(0));
-                AddAccessibleNode("Player", "Open statistics.", GetMenuPlayerBadgeBounds(), AccessibleRole.PushButton, () => OpenMainMenuAction(2));
+                AddAccessibleNode("Statistics", "Open player statistics.", GetMenuPlayerBadgeBounds(), AccessibleRole.PushButton, () => OpenMainMenuAction(2));
                 AddAccessibleNode("Restart", "Restart the game application.", GetMenuActionButtonBounds(3), AccessibleRole.PushButton, () => OpenMainMenuAction(3));
                 AddAccessibleNode("Exit", "Close the game.", GetExitButtonBounds(), AccessibleRole.PushButton, Close);
                 break;
@@ -174,9 +226,21 @@ public sealed partial class GameForm
                 break;
 
             case UiScreen.Analyze:
+                Rectangle resultBounds = GetAnalyzeContentBounds();
+                resultBounds.Height = Math.Max(1, resultBounds.Height - (int)ScaleY(130f));
+                string replayStatus = string.IsNullOrWhiteSpace(_analyzeReplayStatus)
+                    ? string.Empty
+                    : $"{_analyzeReplayStatus}. ";
+                AddAccessibleNode(
+                    $"Result summary. Score {_analyzeScore}. Accuracy {_analyzeAccuracy:F2} percent. Grade {ScoreManager.FormatGrade(_analyzeGrade)}. {ScoreManager.FormatClearType(_analyzeClearType)}.",
+                    $"{replayStatus}Max combo {_analyzeMaxCombo}. Max miss streak {_analyzeMissStreak}. {_analyzeFeedback.TimingLabel}. {_analyzeFeedback.FailureLabel}. {_analyzeFeedback.NextGoal}.",
+                    resultBounds,
+                    AccessibleRole.StaticText,
+                    null);
                 AddAccessibleNode("Retry", "Play the selected song again.", GetAnalyzeActionButtonBounds(0), AccessibleRole.PushButton, () => HandleAnalyzeMouseDown(GetAnalyzeActionButtonBounds(0).Center()));
                 AddAccessibleNode("Song Select", "Return to song selection.", GetAnalyzeActionButtonBounds(1), AccessibleRole.PushButton, () => HandleAnalyzeMouseDown(GetAnalyzeActionButtonBounds(1).Center()));
-                AddAccessibleNode("Next", "Play the next song.", GetAnalyzeActionButtonBounds(2), AccessibleRole.PushButton, () => HandleAnalyzeMouseDown(GetAnalyzeActionButtonBounds(2).Center()));
+                if (CanPlayNextSong())
+                    AddAccessibleNode("Next", "Play the next song.", GetAnalyzeActionButtonBounds(2), AccessibleRole.PushButton, () => HandleAnalyzeMouseDown(GetAnalyzeActionButtonBounds(2).Center()));
                 break;
 
             case UiScreen.InputCalibration:
@@ -186,7 +250,7 @@ public sealed partial class GameForm
 
             case UiScreen.KeyBindings:
                 AddAccessibleNode("Back", "Return to settings.", GetKeyBindingBackButtonBounds(), AccessibleRole.PushButton, () => HandleKeyBindingsMouseDown(GetKeyBindingBackButtonBounds().Center()));
-                AddAccessibleNode("Lane mode tabs", "Choose 4K, 5K, or 7K key binding set.", GetKeyBindingModeTabBounds(), AccessibleRole.PageTab, () => HandleKeyBindingsMouseDown(GetKeyBindingModeTabBounds().Center()));
+                AddAccessibleNode("Lane mode tabs", "Choose 4K, 5K, 6K, or 7K key binding set.", GetKeyBindingModeTabBounds(), AccessibleRole.PageTab, () => HandleKeyBindingsMouseDown(GetKeyBindingModeTabBounds().Center()));
                 for (int lane = 0; lane < LaneModes[_keyBindingModeIndex].Count; lane++)
                 {
                     int capturedLane = lane;
@@ -229,7 +293,7 @@ public sealed partial class GameForm
         AddAccessibleNode("Hit sound skin", "Cycle hit sound skin.", GetSettingsSegmentBounds("hitskin"), AccessibleRole.ComboBox, () => CycleHitSoundSkin(1), delta => CycleHitSoundSkin(delta));
         AddAccessibleNode("Hit sound mute", "Toggle hit sound mute.", GetSettingsToggleBounds("hitmute"), AccessibleRole.CheckButton, () => HandleSettingsMouseDown(GetSettingsToggleBounds("hitmute").Center()));
         AddAccessibleNode("Hit pitch", "Cycle hit sound pitch.", GetSettingsSegmentBounds("hitpitch"), AccessibleRole.ComboBox, () => CycleHitPitch(1), delta => CycleHitPitch(delta));
-        AddAccessibleNode("Lane mode", "Choose 4K, 5K, or 7K lane mode.", GetSettingsSegmentBounds("lanemode"), AccessibleRole.ComboBox, () => CycleLaneModeSetting(1), delta => CycleLaneModeSetting(delta));
+        AddAccessibleNode("Lane mode", "Choose 4K, 5K, 6K, or 7K lane mode.", GetSettingsSegmentBounds("lanemode"), AccessibleRole.ComboBox, () => CycleLaneModeSetting(1), delta => CycleLaneModeSetting(delta));
         AddAccessibleNode("Calibration", "Open input latency calibration.", GetCalibrationEntryButtonBounds(), AccessibleRole.PushButton, () => HandleSettingsMouseDown(GetCalibrationEntryButtonBounds().Center()));
         AddAccessibleNode("Key bindings", "Open key binding settings.", GetKeyBindingEntryButtonBounds(), AccessibleRole.PushButton, () => HandleSettingsMouseDown(GetKeyBindingEntryButtonBounds().Center()));
         AddAccessibleNode("Resolution", "Cycle window resolution.", GetSettingsSegmentBounds("display"), AccessibleRole.ComboBox, () => CycleResolutionSetting(1), delta => CycleResolutionSetting(delta));
@@ -261,7 +325,7 @@ public sealed partial class GameForm
         AddAccessibleNode("Favorites filter", "Toggle favorites filter.", GetSongFavoriteFilterBounds(panel), AccessibleRole.CheckButton, () => HandleSongSelectMouseDown(GetSongFavoriteFilterBounds(panel).Center()));
         AddAccessibleNode("Rescan songs", "Rescan song library.", GetSongRescanButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongRescanButtonBounds(panel).Center()));
         AddAccessibleNode("Song detail", "Open selected song detail.", GetSongDetailButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongDetailButtonBounds(panel).Center()));
-        AddAccessibleNode("Replay latest", "Play the latest saved replay for the selected song, difficulty, and lane mode.", GetSongPlayButtonBounds(panel).WithOffset(0, -(int)ScaleY(68f)), AccessibleRole.PushButton, StartReplayForSelectedSong);
+        AddAccessibleNode("Replay latest compatible", "Play the newest compatible saved replay for the selected song, difficulty, lane mode, chart snapshot, audio file, and game version.", GetSongPlayButtonBounds(panel).WithOffset(0, -(int)ScaleY(68f)), AccessibleRole.PushButton, StartReplayForSelectedSong);
 
         Rectangle list = GetSongListBounds(panel);
         SongEntry[] songs = GetFilteredSongs();
@@ -302,20 +366,44 @@ public sealed partial class GameForm
         });
     }
 
+    private int GetAccessibleCountdownRemainingSeconds()
+    {
+        if (_countdownStartTime == default)
+            return Math.Max(0, _countdownSeconds);
+
+        double elapsedSeconds = Math.Max(0d, (DateTime.Now - _countdownStartTime).TotalSeconds);
+        double remainingSeconds = Math.Max(0d, _countdownSeconds - elapsedSeconds);
+        return (int)Math.Ceiling(remainingSeconds);
+    }
+
+    private bool IsAccessibleNodeInteractive(AccessibleUiNode? node)
+    {
+        return node?.Invoke is not null || node?.Adjust is not null;
+    }
+
     private bool HandleAccessibilityKeyDown(KeyEventArgs e)
     {
         bool active = !_engine.IsRunning || _isGamePaused;
         if (!active || (_screen == UiScreen.SongSelect && _isSongSearchFocused && e.KeyCode is not (Keys.Tab or Keys.Escape)))
             return false;
 
-        if (e.KeyCode is Keys.Tab or Keys.Up or Keys.Down)
+        // Screen transitions can happen from the game timer without a keyboard
+        // event. Refresh before using a prior focus index so Enter cannot invoke
+        // a stale node from the previous screen.
+        RebuildAccessibleNodes();
+
+        bool directionalFocus = _screen != UiScreen.SongSelect && e.KeyCode is Keys.Up or Keys.Down;
+        if (e.KeyCode == Keys.Tab || directionalFocus)
         {
-            RebuildAccessibleNodes();
             if (_accessibleNodes.Count == 0)
                 return false;
 
             int delta = e.Shift || e.KeyCode == Keys.Up ? -1 : 1;
-            FocusAccessibleNode((_keyboardFocusIndex + delta + _accessibleNodes.Count) % _accessibleNodes.Count, announce: true);
+            int nextIndex = FindNextInteractiveAccessibleNode(_keyboardFocusIndex, delta);
+            if (nextIndex < 0)
+                return false;
+
+            FocusAccessibleNode(nextIndex, announce: true);
             e.SuppressKeyPress = true;
             Invalidate();
             return true;
@@ -344,9 +432,29 @@ public sealed partial class GameForm
         return false;
     }
 
+    private int FindNextInteractiveAccessibleNode(int startIndex, int delta)
+    {
+        if (_accessibleNodes.Count == 0)
+            return -1;
+
+        int step = delta < 0 ? -1 : 1;
+        int index = startIndex;
+        if (index < 0 || index >= _accessibleNodes.Count)
+            index = step > 0 ? -1 : 0;
+
+        for (int visited = 0; visited < _accessibleNodes.Count; visited++)
+        {
+            index = (index + step + _accessibleNodes.Count) % _accessibleNodes.Count;
+            if (IsAccessibleNodeInteractive(_accessibleNodes[index]))
+                return index;
+        }
+
+        return -1;
+    }
+
     private void FocusAccessibleNode(int index, bool announce)
     {
-        if (index < 0 || index >= _accessibleNodes.Count)
+        if (index < 0 || index >= _accessibleNodes.Count || !IsAccessibleNodeInteractive(_accessibleNodes[index]))
             return;
 
         _keyboardFocusIndex = index;
@@ -356,10 +464,10 @@ public sealed partial class GameForm
 
     private void InvokeAccessibleNode(int index)
     {
-        if (index < 0 || index >= _accessibleNodes.Count)
+        if (index < 0 || index >= _accessibleNodes.Count || _accessibleNodes[index].Invoke is null)
             return;
 
-        _accessibleNodes[index].Invoke?.Invoke();
+        _accessibleNodes[index].Invoke!();
         _accessibleScreenKey = string.Empty;
         Invalidate();
     }
@@ -391,7 +499,7 @@ public sealed partial class GameForm
             return;
 
         AccessibleUiNode node = _accessibleNodes[_keyboardFocusIndex];
-        if (node.ClientCoordinates != clientCoordinates)
+        if (!IsAccessibleNodeInteractive(node) || node.ClientCoordinates != clientCoordinates)
             return;
 
         Rectangle bounds = Rectangle.Inflate(node.Bounds, (int)ScaleX(4f), (int)ScaleY(4f));

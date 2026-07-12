@@ -10,6 +10,8 @@ public sealed partial class GameForm
     private const float SongSelectPhotoHeight = 941f;
     private static readonly string SongSelectPhotoRelativePath = Path.Combine("Assets", "play-interface.png");
     private Image? _songSelectPhoto;
+    private FileSystemWatcher? _songFolderWatcher;
+    private System.Threading.Timer? _songGenerationDebounceTimer;
 
     private sealed record SongEntry(
         string SongId,
@@ -127,6 +129,64 @@ public sealed partial class GameForm
 
     /// <summary>곡 목록 캐시를 무효화한다 (새 WAV 추가 시).</summary>
     private static void InvalidateSongCache() => _cachedSongList = null;
+
+    private void StartSongFolderWatcher()
+    {
+        string songDirectory = Path.Combine(AppContext.BaseDirectory, "Songs", "InGameBGM", "Original");
+        if (!Directory.Exists(songDirectory) || _songFolderWatcher is not null)
+            return;
+
+        _songGenerationDebounceTimer = new System.Threading.Timer(
+            _ => ProcessQueuedSongFolderChange(),
+            null,
+            Timeout.Infinite,
+            Timeout.Infinite);
+        _songFolderWatcher = new FileSystemWatcher(songDirectory)
+        {
+            IncludeSubdirectories = false,
+            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
+        };
+        _songFolderWatcher.Created += OnSongFolderChanged;
+        _songFolderWatcher.Changed += OnSongFolderChanged;
+        _songFolderWatcher.Deleted += OnSongFolderChanged;
+        _songFolderWatcher.Renamed += OnSongFolderChanged;
+        _songFolderWatcher.EnableRaisingEvents = true;
+    }
+
+    private void OnSongFolderChanged(object sender, FileSystemEventArgs e)
+    {
+        string extension = Path.GetExtension(e.FullPath);
+        if (!AudioFileCatalog.SupportedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase) &&
+            !string.Equals(extension, ".json", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _songGenerationDebounceTimer?.Change(900, Timeout.Infinite);
+    }
+
+    private void ProcessQueuedSongFolderChange()
+    {
+        ChartGenerator.BeginGenerateAllChartsAsync();
+        try
+        {
+            if (IsDisposed || !IsHandleCreated)
+                return;
+
+            BeginInvoke((Action)(() =>
+            {
+                InvalidateSongCache();
+                _previewSongKey = string.Empty;
+                _feedback = "Song change detected - charts preparing";
+                _feedbackTime = DateTime.Now;
+                Invalidate();
+            }));
+        }
+        catch (InvalidOperationException)
+        {
+            // The form can close between the watcher callback and BeginInvoke.
+        }
+    }
 
     private static string BuildSongMetadata(SongEntry song, bool includeBest = false)
     {
@@ -967,6 +1027,7 @@ public sealed partial class GameForm
 
     private void HandleSongSelectMouseDown(Point location)
     {
+        CancelPendingReplayLoad();
         _isSongSearchFocused = IsSongSearchBoxHit(location);
         if (_isSongSearchFocused)
         {
@@ -996,10 +1057,7 @@ public sealed partial class GameForm
 
         if (code is >= 10 and <= 12)
         {
-            _songSelectDifficultyIndex = code - 10;
-            _songSelectPageIndex = 0;
-            _songSelectSelectedIndex = 0;
-            _previewSongKey = string.Empty;
+            SetSongDifficulty(code - 10);
             Invalidate();
             return;
         }
@@ -1182,6 +1240,7 @@ public sealed partial class GameForm
 
     private void ApplySongSearchInput(char? appendChar = null, bool removeLast = false)
     {
+        CancelPendingReplayLoad();
         if (removeLast)
         {
             if (_songSearchQuery.Length > 0)
@@ -1205,6 +1264,7 @@ public sealed partial class GameForm
 
     private void MoveSongSelection(int delta)
     {
+        CancelPendingReplayLoad();
         SongEntry[] songs = GetFilteredSongs();
         if (songs.Length == 0)
         {
@@ -1220,6 +1280,7 @@ public sealed partial class GameForm
 
     private void SelectSongPage(int pageIndex)
     {
+        CancelPendingReplayLoad();
         int pageCount = GetSongPageCount();
         _songSelectPageIndex = Math.Clamp(pageIndex, 0, pageCount - 1);
         _songSelectSelectedIndex = Math.Min(GetFilteredSongs().Length - 1, _songSelectPageIndex * SongRowsPerPage);
@@ -1229,7 +1290,28 @@ public sealed partial class GameForm
 
     private void ChangeSongDifficulty(int delta)
     {
-        _songSelectDifficultyIndex = Math.Clamp(_songSelectDifficultyIndex + delta, 0, 2);
+        SetSongDifficulty(_songSelectDifficultyIndex + delta);
+    }
+
+    private void SetSongDifficulty(int difficultyIndex)
+    {
+        CancelPendingReplayLoad();
+        SongEntry? selectedSong = GetSelectedSong();
+        string selectedSongId = selectedSong?.SongId ?? string.Empty;
+        int previousIndex = _songSelectSelectedIndex;
+
+        _songSelectDifficultyIndex = Math.Clamp(difficultyIndex, 0, 2);
+
+        SongEntry[] songs = GetFilteredSongs();
+        int restoredIndex = string.IsNullOrEmpty(selectedSongId)
+            ? -1
+            : Array.FindIndex(songs, song => string.Equals(song.SongId, selectedSongId, StringComparison.Ordinal));
+        _songSelectSelectedIndex = restoredIndex >= 0
+            ? restoredIndex
+            : songs.Length == 0 ? 0 : Math.Clamp(previousIndex, 0, songs.Length - 1);
+        _songSelectPageIndex = songs.Length == 0
+            ? 0
+            : Math.Clamp(_songSelectSelectedIndex / SongRowsPerPage, 0, GetSongPageCount() - 1);
         _previewSongKey = string.Empty;
     }
 
@@ -1244,6 +1326,7 @@ public sealed partial class GameForm
 
     private void RescanSongs()
     {
+        CancelPendingReplayLoad();
         InvalidateSongCache();
         _songSelectPageIndex = 0;
         _songSelectSelectedIndex = 0;
@@ -1251,6 +1334,7 @@ public sealed partial class GameForm
         _songPreviewNotes = [];
         _songPreviewDifficulty = null;
         _audio.StopSongPreview();
+        ChartGenerator.BeginGenerateAllChartsAsync();
         _feedback = "Songs rescanned";
         _feedbackTime = DateTime.Now;
         Invalidate();
@@ -1258,6 +1342,7 @@ public sealed partial class GameForm
 
     private void OpenSelectedSongDetail()
     {
+        CancelPendingReplayLoad();
         if (GetSelectedSong() is null)
             return;
 
@@ -1279,6 +1364,7 @@ public sealed partial class GameForm
 
     private void OpenSelectedChartForEditing()
     {
+        CancelPendingReplayLoad();
         SongEntry? song = GetSelectedSong();
         if (song is null)
             return;

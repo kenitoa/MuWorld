@@ -10,19 +10,21 @@ public sealed partial class GameForm
 
     private void IncreaseSpeed()
     {
+        InvalidateReplayRecording("SPEED CHANGED");
         _speedMultiplier = MathF.Min(SpeedMax, MathF.Round((_speedMultiplier + SpeedStep) * 10f) / 10f);
         ApplySpeedToEngine();
     }
 
     private void DecreaseSpeed()
     {
+        InvalidateReplayRecording("SPEED CHANGED");
         _speedMultiplier = MathF.Max(SpeedMin, MathF.Round((_speedMultiplier - SpeedStep) * 10f) / 10f);
         ApplySpeedToEngine();
     }
 
     private void ApplySpeedToEngine()
     {
-        _engine.NoteSpeedMultiplier = _speedMultiplier * EngineSpeedScale;
+        _engine.NoteSpeedMultiplier = EffectiveSpeedMultiplier * EngineSpeedScale;
     }
 
     private static readonly SolidBrush _indicatorBgBrush = new(Color.FromArgb(180, 20, 22, 35));
@@ -44,7 +46,7 @@ public sealed partial class GameForm
         g.FillPath(_indicatorBgBrush, path);
         g.DrawPath(_indicatorBorderPen, path);
 
-        string text = $"X{_speedMultiplier:F1}";
+        string text = $"X{EffectiveSpeedMultiplier:F1}";
         SizeF textSize = g.MeasureString(text, _speedFont);
         g.DrawString(text, _speedFont, _indicatorTextBrush,
             bounds.Left + (bounds.Width - textSize.Width) / 2f,

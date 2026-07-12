@@ -31,6 +31,7 @@ internal sealed class UserSettings
     public int PlayModeIndex { get; set; }
     public string[] KeyBindings4K { get; set; } = [];
     public string[] KeyBindings5K { get; set; } = [];
+    public string[] KeyBindings6K { get; set; } = [];
     public string[] KeyBindings7K { get; set; } = [];
     public string LastSavedUtc { get; set; } = string.Empty;
 }
@@ -66,7 +67,7 @@ internal sealed class UserSettingsStore
             if (!SafeJsonFile.TryReadWithBackup(_saveFilePath, out string json))
                 return new UserSettings();
 
-            return JsonSerializer.Deserialize<UserSettings>(json, JsonOptions) ?? new UserSettings();
+            return Normalize(JsonSerializer.Deserialize<UserSettings>(json, JsonOptions) ?? new UserSettings());
         }
         catch (Exception ex)
         {
@@ -75,7 +76,7 @@ internal sealed class UserSettingsStore
             {
                 try
                 {
-                    return JsonSerializer.Deserialize<UserSettings>(backupJson, JsonOptions) ?? new UserSettings();
+                    return Normalize(JsonSerializer.Deserialize<UserSettings>(backupJson, JsonOptions) ?? new UserSettings());
                 }
                 catch (Exception backupEx)
                 {
@@ -89,8 +90,18 @@ internal sealed class UserSettingsStore
 
     public void Save(UserSettings settings)
     {
+        Normalize(settings);
         settings.LastSavedUtc = DateTime.UtcNow.ToString("O");
         string json = JsonSerializer.Serialize(settings, JsonOptions);
         SafeJsonFile.WriteWithBackup(_saveFilePath, json);
+    }
+
+    private static UserSettings Normalize(UserSettings settings)
+    {
+        settings.KeyBindings4K ??= [];
+        settings.KeyBindings5K ??= [];
+        settings.KeyBindings6K ??= [];
+        settings.KeyBindings7K ??= [];
+        return settings;
     }
 }

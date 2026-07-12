@@ -5,12 +5,12 @@
   },
   "projects": {
     "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "restore": {
         "projectUniqueName": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj",
         "projectName": "game start",
         "projectPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj",
-        "packagesPath": "C:\\Users\\CodexSandboxOffline\\.nuget\\packages\\",
+        "packagesPath": "C:\\Users\\abc20\\.nuget\\packages\\",
         "outputPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
@@ -38,7 +38,7 @@
           "auditLevel": "low",
           "auditMode": "direct"
         },
-        "SdkAnalysisLevel": "9.0.300"
+        "SdkAnalysisLevel": "10.0.200"
       },
       "frameworks": {
         "net9.0-windows7.0": {
@@ -54,6 +54,24 @@
           ],
           "assetTargetFallback": true,
           "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.AspNetCore.App.Ref",
+              "version": "[9.0.15, 9.0.15]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Host.win-x64",
+              "version": "[9.0.15, 9.0.15]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Ref",
+              "version": "[9.0.15, 9.0.15]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[9.0.15, 9.0.15]"
+            }
+          ],
           "frameworkReferences": {
             "Microsoft.NETCore.App": {
               "privateAssets": "all"
@@ -62,7 +80,7 @@
               "privateAssets": "none"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\dotnet\\sdk\\9.0.314/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.203/PortableRuntimeIdentifierGraph.json"
         }
       }
     },
@@ -72,7 +90,7 @@
         "projectUniqueName": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\Tests\\MuWorld.SelfTests.csproj",
         "projectName": "MuWorld.SelfTests",
         "projectPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\Tests\\MuWorld.SelfTests.csproj",
-        "packagesPath": "C:\\Users\\CodexSandboxOffline\\.nuget\\packages\\",
+        "packagesPath": "C:\\Users\\abc20\\.nuget\\packages\\",
         "outputPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\Tests\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
@@ -104,7 +122,7 @@
           "auditLevel": "low",
           "auditMode": "direct"
         },
-        "SdkAnalysisLevel": "9.0.300"
+        "SdkAnalysisLevel": "10.0.200"
       },
       "frameworks": {
         "net9.0-windows7.0": {
@@ -120,6 +138,24 @@
           ],
           "assetTargetFallback": true,
           "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.AspNetCore.App.Ref",
+              "version": "[9.0.15, 9.0.15]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Host.win-x64",
+              "version": "[9.0.15, 9.0.15]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Ref",
+              "version": "[9.0.15, 9.0.15]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[9.0.15, 9.0.15]"
+            }
+          ],
           "frameworkReferences": {
             "Microsoft.NETCore.App": {
               "privateAssets": "all"
@@ -128,7 +164,7 @@
               "privateAssets": "none"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\dotnet\\sdk\\9.0.314/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.203/PortableRuntimeIdentifierGraph.json"
         }
       }
     }

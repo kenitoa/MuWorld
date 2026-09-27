@@ -10,6 +10,8 @@ internal sealed class UserSettings
     public string HitSoundSkin { get; set; } = "CLASSIC";
     public string VisualSkin { get; set; } = "default";
     public int HitSoundPitch { get; set; } = 0;
+    public int TutorialPromptVersion { get; set; }
+    public bool TutorialCompleted { get; set; }
     public bool HitSoundMuted { get; set; }
     public int ThemeColorIndex { get; set; }
     public int LaneBrightness { get; set; } = 70;

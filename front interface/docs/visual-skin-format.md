@@ -41,3 +41,10 @@ Colors use `#RRGGBB` or `#AARRGGBB`.
 ## BGA
 
 Song sidecar JSON can set `"bga": "background.png"`. The image is drawn behind the playfield with a dark overlay. Unsupported video paths are ignored; if no image BGA is present, gameplay uses the built-in audio-position reactive background.
+
+
+## Validation and lifetime
+
+Skin names must be a single directory name: rooted paths, separators, `.` and `..` are rejected. Invalid names use the default skin. Manifest size is limited to 256KiB; images to 16MiB and 4096 pixels per side. A bad asset falls back independently and logs its failure. Replacing a skin and closing the game dispose the loaded bitmaps.
+
+BGA supports PNG, JPG, JPEG and BMP images up to the same image limits. Unsupported video paths are shown as `IMAGE BGA ONLY` in library status. Missing and failed assets use the built-in background.

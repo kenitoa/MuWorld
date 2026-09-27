@@ -1,0 +1,522 @@
+[
+  {
+    "run": 1,
+    "comparison": "REPLAY VERIFIED",
+    "Score": 1000000,
+    "Accuracy": 100,
+    "Clock": {
+      "SourceFormat": "wav",
+      "Samples": 170,
+      "QueryFailures": 0,
+      "BackwardJumps": 0,
+      "ForwardJumps": 0,
+      "Stalls": 1,
+      "Segments": 2,
+      "MeanAbsoluteJitterMs": 1.2454147,
+      "MaximumAbsoluteJitterMs": 50.221,
+      "SegmentDriftMs": -36.168045
+    },
+    "Judgments": [
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 0,
+        "EndLane": 0,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 3,
+        "EndLane": 3,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 3,
+        "TargetTime": 3,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 4.0016136,
+        "TargetTime": 4,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 5,
+        "TargetTime": 5,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 6.002892,
+        "TargetTime": 6,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 7,
+        "TargetTime": 7,
+        "Lane": 2,
+        "EndLane": 2,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      }
+    ]
+  },
+  {
+    "run": 2,
+    "comparison": "REPLAY VERIFIED",
+    "Score": 1000000,
+    "Accuracy": 100,
+    "Clock": {
+      "SourceFormat": "wav",
+      "Samples": 170,
+      "QueryFailures": 0,
+      "BackwardJumps": 0,
+      "ForwardJumps": 0,
+      "Stalls": 1,
+      "Segments": 2,
+      "MeanAbsoluteJitterMs": 1.2957845,
+      "MaximumAbsoluteJitterMs": 53.2427,
+      "SegmentDriftMs": -36.376537
+    },
+    "Judgments": [
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 0,
+        "EndLane": 0,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 3,
+        "EndLane": 3,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 3,
+        "TargetTime": 3,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 4.015751,
+        "TargetTime": 4,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 5,
+        "TargetTime": 5,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 6.017435,
+        "TargetTime": 6,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 7,
+        "TargetTime": 7,
+        "Lane": 2,
+        "EndLane": 2,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      }
+    ]
+  },
+  {
+    "run": 3,
+    "comparison": "REPLAY VERIFIED",
+    "Score": 1000000,
+    "Accuracy": 100,
+    "Clock": {
+      "SourceFormat": "wav",
+      "Samples": 171,
+      "QueryFailures": 0,
+      "BackwardJumps": 0,
+      "ForwardJumps": 0,
+      "Stalls": 1,
+      "Segments": 2,
+      "MeanAbsoluteJitterMs": 1.2832904,
+      "MaximumAbsoluteJitterMs": 52.4791,
+      "SegmentDriftMs": -38.55701
+    },
+    "Judgments": [
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 0,
+        "EndLane": 0,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 3,
+        "EndLane": 3,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 3,
+        "TargetTime": 3,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 4.0019484,
+        "TargetTime": 4,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 5,
+        "TargetTime": 5,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 6.0023746,
+        "TargetTime": 6,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 7,
+        "TargetTime": 7,
+        "Lane": 2,
+        "EndLane": 2,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      }
+    ]
+  },
+  {
+    "run": 4,
+    "comparison": "REPLAY VERIFIED",
+    "Score": 1000000,
+    "Accuracy": 100,
+    "Clock": {
+      "SourceFormat": "wav",
+      "Samples": 171,
+      "QueryFailures": 0,
+      "BackwardJumps": 0,
+      "ForwardJumps": 0,
+      "Stalls": 0,
+      "Segments": 2,
+      "MeanAbsoluteJitterMs": 1.0506197,
+      "MaximumAbsoluteJitterMs": 41.5156,
+      "SegmentDriftMs": -31.202955
+    },
+    "Judgments": [
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 0,
+        "EndLane": 0,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 3,
+        "EndLane": 3,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 3,
+        "TargetTime": 3,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 4,
+        "TargetTime": 4,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 5,
+        "TargetTime": 5,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 6,
+        "TargetTime": 6,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 7,
+        "TargetTime": 7,
+        "Lane": 2,
+        "EndLane": 2,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      }
+    ]
+  },
+  {
+    "run": 5,
+    "comparison": "REPLAY VERIFIED",
+    "Score": 1000000,
+    "Accuracy": 100,
+    "Clock": {
+      "SourceFormat": "wav",
+      "Samples": 171,
+      "QueryFailures": 0,
+      "BackwardJumps": 0,
+      "ForwardJumps": 0,
+      "Stalls": 1,
+      "Segments": 2,
+      "MeanAbsoluteJitterMs": 1.3033392,
+      "MaximumAbsoluteJitterMs": 53.070198,
+      "SegmentDriftMs": -39.13773
+    },
+    "Judgments": [
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 0,
+        "EndLane": 0,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 2,
+        "TargetTime": 2,
+        "Lane": 3,
+        "EndLane": 3,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 3,
+        "TargetTime": 3,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 4.000925,
+        "TargetTime": 4,
+        "Lane": 1,
+        "EndLane": 1,
+        "NoteType": 1,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 5,
+        "TargetTime": 5,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 1,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 6.0005593,
+        "TargetTime": 6,
+        "Lane": 0,
+        "EndLane": 1,
+        "NoteType": 2,
+        "Phase": 3,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      },
+      {
+        "ChartTime": 7,
+        "TargetTime": 7,
+        "Lane": 2,
+        "EndLane": 2,
+        "NoteType": 0,
+        "Phase": 0,
+        "Judgment": 0,
+        "FailureReason": 0,
+        "OffsetSeconds": 0,
+        "IsMiss": false
+      }
+    ]
+  }
+]

@@ -9,12 +9,17 @@ public readonly record struct LaneNote(
     float Duration = 0f,
     int EndLane = -1);
 
+public readonly record struct ChartTempoPoint(float Time, float Bpm);
+
 public sealed record EditableChart(
     string Path,
     float Bpm,
     IReadOnlyList<LaneNote> Notes,
     IReadOnlyList<ChartDiagnostic> Diagnostics,
-    ChartDifficultyInfo Difficulty);
+    ChartDifficultyInfo Difficulty)
+{
+    public IReadOnlyList<ChartTempoPoint> TempoMap { get; init; } = [new(0f, Bpm)];
+}
 
 public static class NoteLane
 {
@@ -25,7 +30,10 @@ public static class NoteLane
 
     private readonly record struct RawNote(int Measure, float Offset, int Lane, string Token);
     private readonly record struct TempoEvent(int Measure, float Offset, float Bpm);
-    private sealed record BmsParseResult(List<LaneNote> Notes, float BaseBpm, List<ChartDiagnostic> Diagnostics);
+    private sealed record BmsParseResult(List<LaneNote> Notes, float BaseBpm, List<ChartDiagnostic> Diagnostics)
+    {
+        public IReadOnlyList<ChartTempoPoint> TempoMap { get; init; } = [new(0f, BaseBpm)];
+    }
 
     public static IReadOnlyList<LaneNote> LoadNotes(string? title, string? artist, int difficultyIndex, int laneCount = 4)
     {
@@ -43,8 +51,7 @@ public static class NoteLane
             if (File.Exists(userChartPath))
             {
                 BmsParseResult result = ParseSimpleBms(userChartPath, laneCount);
-                if (result.Notes.Count > 0)
-                    return ChartValidator.ValidateAndFilter(NormalizeForLaneMode(result.Notes, difficultyIndex, laneCount), laneCount, result.Diagnostics);
+                return ChartValidator.ValidateAndFilter(result.Notes, laneCount, result.Diagnostics);
             }
 
             string legacyUserChartPath = ChartGenerator.GetUserChartPath(title, difficultyIndex);
@@ -87,11 +94,39 @@ public static class NoteLane
     {
         string path = ChartGenerator.EnsureUserEditableChart(title, difficultyIndex, laneCount);
         BmsParseResult result = ParseSimpleBms(path, laneCount);
+        if (result.Diagnostics.Any(d => d.Severity == ChartDiagnosticSeverity.Error))
+            throw new InvalidDataException("Cannot edit an unreadable chart; restore its backup first.");
         ChartValidationResult validated = ChartValidator.ValidateAndFilter(result.Notes, laneCount, result.Diagnostics);
-        return new EditableChart(path, result.BaseBpm, validated.Notes, validated.Diagnostics, validated.Difficulty);
+        return new EditableChart(path, result.BaseBpm, validated.Notes, validated.Diagnostics, validated.Difficulty) { TempoMap = result.TempoMap };
+    }
+
+    internal static IReadOnlyList<LaneNote> ReadExactUserNotes(string path)
+    {
+        if (new FileInfo(path).Length > 32 * 1024 * 1024)
+            throw new InvalidDataException("Chart exceeds 32 MiB.");
+        string[] lines = File.ReadAllLines(path);
+        string[] versions = lines.Where(line => line.StartsWith("#MUWORLD-NOTES ", StringComparison.Ordinal)).ToArray();
+        string[] payloads = lines.Where(line => line.StartsWith("#MWNOTES ", StringComparison.Ordinal)).ToArray();
+        if (versions.Length != 1 || versions[0] != "#MUWORLD-NOTES 1" || payloads.Length != 1)
+            throw new InvalidDataException("Unsupported or malformed MuWorld chart extension.");
+        List<LaneNote> notes = System.Text.Json.JsonSerializer.Deserialize<List<LaneNote>>(payloads[0][9..])
+            ?? throw new InvalidDataException("Missing chart notes.");
+        if (notes.Count > 200_000) throw new InvalidDataException("Chart exceeds 200000 notes.");
+        return notes;
     }
 
     private static BmsParseResult ParseSimpleBms(string filePath, int laneCount)
+    {
+        try { return ParseSimpleBmsCore(filePath, laneCount); }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            AppLogger.Error("Chart read failed.", ex);
+            return new BmsParseResult([], 120f, [new ChartDiagnostic(ChartDiagnosticSeverity.Error,
+                "Chart cannot be read or uses an unsupported format. Restore the backup or choose another chart.")]);
+        }
+    }
+
+    private static BmsParseResult ParseSimpleBmsCore(string filePath, int laneCount)
     {
         float baseBpm = 128f;
         var bpmTable = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
@@ -107,6 +142,8 @@ public static class NoteLane
             if (line.Length == 0 || !line.StartsWith('#'))
                 continue;
 
+            if (line.StartsWith("#MUWORLD-NOTES ", StringComparison.Ordinal) || line.StartsWith("#MWNOTES ", StringComparison.Ordinal) || line.StartsWith("#MWTEMPO ", StringComparison.Ordinal))
+                continue;
             if (TryParseBpmDefinition(line, bpmTable, ref baseBpm, diagnostics, lineNumber))
                 continue;
 
@@ -198,7 +235,20 @@ public static class NoteLane
             .OrderBy(n => n.Time)
             .ThenBy(n => n.Lane)
             .ToList();
-        return new BmsParseResult(notes, baseBpm, diagnostics);
+        if (File.ReadLines(filePath).Any(line => line.StartsWith("#MUWORLD-NOTES ", StringComparison.Ordinal)))
+            notes = ReadExactUserNotes(filePath).OrderBy(note => note.Time).ThenBy(note => note.Lane).ToList();
+        List<ChartTempoPoint> tempoMap = [new(0f, baseBpm)];
+        tempoMap.AddRange(tempoEvents.Select(e => new ChartTempoPoint(timing.ToSeconds(e.Measure, e.Offset), e.Bpm)));
+        string? exactTempo = File.ReadLines(filePath).FirstOrDefault(line => line.StartsWith("#MWTEMPO ", StringComparison.Ordinal));
+        if (exactTempo is not null)
+            tempoMap = System.Text.Json.JsonSerializer.Deserialize<List<ChartTempoPoint>>(exactTempo[9..])
+                ?? throw new InvalidDataException("Missing tempo map.");
+        if (tempoMap.Count == 0 || tempoMap[0].Time != 0f || tempoMap.Any(p => !float.IsFinite(p.Time) || p.Time < 0 || !float.IsFinite(p.Bpm) || p.Bpm <= 0))
+            throw new InvalidDataException("Invalid tempo map.");
+        return new BmsParseResult(notes, baseBpm, diagnostics)
+        {
+            TempoMap = tempoMap.OrderBy(p => p.Time).GroupBy(p => p.Time).Select(g => g.Last()).ToArray(),
+        };
     }
 
     private static bool TryParseBpmDefinition(string line, Dictionary<string, float> bpmTable, ref float baseBpm, List<ChartDiagnostic> diagnostics, int lineNumber)
@@ -206,7 +256,7 @@ public static class NoteLane
         if (line.StartsWith("#BPM ", StringComparison.OrdinalIgnoreCase))
         {
             string value = line[4..].Trim();
-            if (float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedBpm) && parsedBpm > 0f)
+            if (float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedBpm) && float.IsFinite(parsedBpm) && parsedBpm > 0f)
                 baseBpm = parsedBpm;
             else
                 diagnostics.Add(new ChartDiagnostic(ChartDiagnosticSeverity.Warning, $"Invalid base BPM '{value}'. BPM must be positive.", lineNumber));
@@ -223,7 +273,7 @@ public static class NoteLane
                 return true;
             }
 
-            if (float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedBpm) && parsedBpm > 0f)
+            if (float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedBpm) && float.IsFinite(parsedBpm) && parsedBpm > 0f)
                 bpmTable[id] = parsedBpm;
             else
                 diagnostics.Add(new ChartDiagnostic(ChartDiagnosticSeverity.Warning, $"Invalid BPM value '{value}'. BPM must be positive.", lineNumber));

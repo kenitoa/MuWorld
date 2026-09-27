@@ -56,6 +56,7 @@ public sealed partial class GameForm : Form
     // ── 엔진 & 타이머 ─────────────────────────────────────────────────────────
     private readonly GameEngine _engine = new();
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 8 }; // ~120 fps
+    private readonly FrameDiagnostics _frameDiagnostics = new();
     private readonly System.Diagnostics.Stopwatch _frameStopwatch = System.Diagnostics.Stopwatch.StartNew();
     private int _hoverMenuIndex = -1;
     private int _hoverSongPlayIndex = -1;
@@ -122,7 +123,7 @@ public sealed partial class GameForm : Form
     private IReadOnlyList<LaneNote> _songPreviewNotes = [];
     private string _songPreviewStatus = string.Empty;
     private List<LaneNote> _chartEditorNotes = [];
-    private readonly Stack<List<LaneNote>> _chartEditorUndo = new();
+    private readonly Stack<ChartEditorSnapshot> _chartEditorUndo = new();
     private int _chartEditorSelectedIndex = -1;
     private int _hoverChartEditorAction = -1;
     private NoteType _chartEditorInsertType = NoteType.Tap;
@@ -513,12 +514,15 @@ public sealed partial class GameForm : Form
 
         try
         {
+            if (new FileInfo(path).Length > 16 * 1024 * 1024) throw new InvalidDataException("BGA exceeds 16 MiB.");
             using var source = new Bitmap(path);
+            if (source.Width > 4096 || source.Height > 4096) throw new InvalidDataException("BGA exceeds 4096 pixels.");
             _gameBgaImage = new Bitmap(source);
         }
         catch (Exception ex)
         {
             AppLogger.Error($"Failed to load BGA image {path}.", ex);
+            if (song is not null) LibraryStatus[song.SongId] = "BGA LOAD FAILED";
             _gameBgaImage = null;
         }
     }
@@ -529,6 +533,7 @@ public sealed partial class GameForm : Form
         var now = DateTime.Now;
         double elapsedMs = _frameStopwatch.Elapsed.TotalMilliseconds;
         _frameStopwatch.Restart();
+        if (_engine.IsRunning && !_isGamePaused) _frameDiagnostics.Record(elapsedMs);
         float dt = (float)(elapsedMs / 1000.0);
         dt = Math.Min(dt, 0.05f); // cap at 50ms to avoid jumps
         bool toastVisible = UpdateAchievementToast(now);
@@ -637,6 +642,14 @@ public sealed partial class GameForm : Form
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        if (e.KeyCode == Keys.F1 && !_engine.IsRunning && !_isCountdownActive && _screen == UiScreen.MainMenu)
+        {
+            OpenTutorial(); e.SuppressKeyPress = true; return;
+        }
+        if (e.KeyCode == Keys.F2 && !_engine.IsRunning && !_isCountdownActive && _screen == UiScreen.SongSelect)
+        {
+            OpenLibraryFilters(); e.SuppressKeyPress = true; return;
+        }
         if (HandleAccessibilityKeyDown(e))
             return;
 
@@ -1159,6 +1172,7 @@ public sealed partial class GameForm : Form
         _lastPlaybackPositionSeconds = 0f;
         _lastAllocationLogTime = DateTime.Now;
         _gdiMonitor.Start(replayPlayback ? "replay" : "game");
+        _frameDiagnostics.Start();
         Array.Clear(_lanePressed);
         Array.Clear(_pauseHeldLaneAwaitingKeyUp);
         _mouseHeldLane = -1;
@@ -1183,6 +1197,15 @@ public sealed partial class GameForm : Form
             : LoadShiftedChartForCurrentLaneMode(selectedSong);
 
         // 시작 후 3초간 노트 없이 준비 시간 확보
+        if (_selectedChartNotes.Count == 0)
+        {
+            CancelSessionAudioFingerprint();
+            _gdiMonitor.Stop("empty-chart");
+            _feedback = "CHART EMPTY OR UNREADABLE";
+            _feedbackTime = DateTime.Now;
+            Invalidate();
+            return;
+        }
         _countdownSeconds = 3;
 
         _isCountdownActive = true;
@@ -1419,6 +1442,7 @@ public sealed partial class GameForm : Form
     {
         ReplayRecord? completedReplay = _isReplayPlayback ? _activeReplay : null;
         _gdiMonitor.Stop(_isReplayPlayback ? "replay" : "game");
+        _frameDiagnostics.Log(_isReplayPlayback ? "replay" : "game");
         // Capture results before stopping engine
         _analyzeScore = _engine.Score.Score;
         _analyzeMaxCombo = _engine.Score.MaxCombo;
@@ -1739,6 +1763,7 @@ public sealed partial class GameForm : Form
             return;
 
         ApplyGaugeJudgment(hit.Judgment);
+        if (!_selfTestMode) _audio.PlayHit(_sfxVolume, hit.Judgment, _hitSoundMuted);
     }
 
     private void ConsumeEngineGaugeEvents()
@@ -2208,6 +2233,17 @@ public sealed partial class GameForm : Form
         _screen = UiScreen.MainMenu;
         _splashTimer.Stop();
         Invalidate();
+        if (!_selfTestMode && _tutorialPromptVersion < 1)
+        {
+            _tutorialPromptVersion = 1;
+            SaveUserSettings();
+            BeginInvoke((Action)(() =>
+            {
+                if (MessageBox.Show(this, "처음 플레이 연습을 시작할까요? 나중에도 메뉴의 TUTORIAL에서 다시 열 수 있습니다.",
+                    "MuWorld", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                    OpenTutorial();
+            }));
+        }
     }
 
     private void DrawSplash(Graphics g)
@@ -2361,6 +2397,10 @@ public sealed partial class GameForm : Form
         using var blueBrush = new SolidBrush(accent);
 
         DrawRhythmBrand(g, MenuX(32f), MenuY(30f), brandFont, dimBrush);
+        Rectangle tutorialBounds = GetTutorialBounds();
+        if (_hoverMenuIndex == 4) g.FillRectangle(Brushes.DarkSlateBlue, tutorialBounds);
+        g.DrawRectangle(Pens.SlateGray, tutorialBounds);
+        g.DrawString("TUTORIAL - F1", smallFont, textBrush, tutorialBounds.Left + MenuS(10f), tutorialBounds.Top + MenuS(10f));
         DrawMenuGearButton(g, GetMenuTopSettingsButtonBounds(), _hoverMenuIndex == 0, accent);
 
         float centerX = MenuX(MainMenuDesignWidth / 2f);
@@ -4064,6 +4104,10 @@ public sealed partial class GameForm : Form
         }
 
         Point logicalPoint = ToLogicalPoint(e.Location);
+        if (_screen == UiScreen.MainMenu && GetTutorialBounds().Contains(logicalPoint))
+        {
+            OpenTutorial(); return;
+        }
 
         if (_screen == UiScreen.Settings)
         {
@@ -4339,6 +4383,10 @@ public sealed partial class GameForm : Form
         }
 
         Point logicalPoint = ToLogicalPoint(e.Location);
+        if (_screen == UiScreen.MainMenu && GetTutorialBounds().Contains(logicalPoint))
+        {
+            OpenTutorial(); return;
+        }
 
         if (_screen == UiScreen.Settings)
         {
@@ -4462,6 +4510,7 @@ public sealed partial class GameForm : Form
 
     private int GetHoveredMenuIndex(Point point)
     {
+        if (GetTutorialBounds().Contains(point)) return 4;
         if (GetMenuTopSettingsButtonBounds().Contains(point))
             return 0;
 
@@ -4489,7 +4538,7 @@ public sealed partial class GameForm : Form
 
     private Rectangle GetMenuPlayerBadgeBounds()
     {
-        return MenuRect(24f, 842f, 220f, 74f);
+        return MenuRect(24f, 842f, 360f, 74f);
     }
 
     private Rectangle GetMenuTopSettingsButtonBounds()
@@ -4954,7 +5003,10 @@ public sealed partial class GameForm : Form
         _audio.SetBgmVolume(_bgmVolume);
         _audio.SetPreviewVolume(_previewVolume);
         _audio.ConfigureHitSound(_hitSoundSkin, _hitSoundPitch, _hitSoundMuted);
+        _audio.PrepareHitSounds(_sfxVolume);
+        VisualSkin previousSkin = _visualSkin;
         _visualSkin = VisualSkin.Load(_visualSkinName);
+        previousSkin.Dispose();
         ApplyDisplayMode();
         ApplyFrameRate();
     }
@@ -4969,6 +5021,8 @@ public sealed partial class GameForm : Form
         _visualSkinName = string.IsNullOrWhiteSpace(settings.VisualSkin) ? VisualSkin.DefaultName : settings.VisualSkin;
         _hitSoundPitch = Math.Clamp(settings.HitSoundPitch, -1, 1);
         _hitSoundMuted = settings.HitSoundMuted;
+        _tutorialPromptVersion = settings.TutorialPromptVersion;
+        _tutorialCompleted = settings.TutorialCompleted;
         _themeColorIndex = Math.Clamp(settings.ThemeColorIndex, 0, ThemeColors.Length - 1);
         _laneBrightness = Math.Clamp(settings.LaneBrightness, 0, 100);
         _frameRateMode = Math.Clamp(settings.FrameRateMode, 0, FrameRateIntervals.Length - 1);
@@ -5020,6 +5074,8 @@ public sealed partial class GameForm : Form
             VisualSkin = _visualSkinName,
             HitSoundPitch = _hitSoundPitch,
             HitSoundMuted = _hitSoundMuted,
+            TutorialPromptVersion = _tutorialPromptVersion,
+            TutorialCompleted = _tutorialCompleted,
             ThemeColorIndex = _themeColorIndex,
             LaneBrightness = _laneBrightness,
             FrameRateMode = _frameRateMode,
@@ -5551,6 +5607,8 @@ public sealed partial class GameForm : Form
             _songGenerationDebounceTimer?.Dispose();
             _audio.Dispose();
             _renderResources.Dispose();
+            _visualSkin.Dispose();
+            _coverImages.Dispose();
             _gameBgaImage?.Dispose();
             _gameBackgroundCache?.Dispose();
             _songSelectPhoto?.Dispose();

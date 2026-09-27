@@ -259,13 +259,39 @@ internal static class ChartGenerator
         return userChartPath;
     }
 
-    public static void SaveUserChart(string songName, int difficultyIndex, int laneCount, float bpm, IReadOnlyList<LaneNote> notes)
+    public static void SaveUserChart(string songName, int difficultyIndex, int laneCount, float bpm, IReadOnlyList<LaneNote> notes, IReadOnlyList<ChartTempoPoint>? tempoMap = null)
     {
         string path = GetUserChartPath(songName, difficultyIndex, laneCount);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        if (!float.IsFinite(bpm) || bpm < 40f || bpm > 300f || laneCount is < 4 or > 7)
+            throw new InvalidDataException("Invalid chart BPM or lane count.");
         ChartValidationResult validated = ChartValidator.ValidateAndFilter(notes, laneCount);
-        string content = BuildBmsStringFromLaneNotes(songName, bpm, validated.Notes, [new TempoSegment(0f, Math.Clamp(bpm, 40f, 300f))]);
-        File.WriteAllText(path, content);
+        if (validated.Notes.Count != notes.Count)
+            throw new InvalidDataException("Resolve overlapping or invalid notes before saving.");
+        tempoMap ??= [new ChartTempoPoint(0f, bpm)];
+        if (tempoMap.Count == 0 || tempoMap[0].Time != 0f || tempoMap[0].Bpm != bpm ||
+            tempoMap.Any(p => !float.IsFinite(p.Time) || p.Time < 0 || !float.IsFinite(p.Bpm) || p.Bpm <= 0) ||
+            !tempoMap.Select(p => p.Time).SequenceEqual(tempoMap.Select(p => p.Time).Distinct().Order()))
+            throw new InvalidDataException("Invalid tempo map.");
+        // The BMS projection remains readable by older versions. MuWorld's versioned
+        // extension preserves exact seconds, duration and end lane without quantization.
+        string content = BuildBmsStringFromLaneNotes(songName, bpm, validated.Notes, tempoMap.Select(p => new TempoSegment(p.Time, p.Bpm)).ToList())
+            + "\n#MUWORLD-NOTES 1\n#MWNOTES " + System.Text.Json.JsonSerializer.Serialize(validated.Notes)
+            + "\n#MWTEMPO " + System.Text.Json.JsonSerializer.Serialize(tempoMap) + "\n";
+        string temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllText(temporary, content);
+            IReadOnlyList<LaneNote> reloaded = NoteLane.ReadExactUserNotes(temporary);
+            if (!reloaded.SequenceEqual(validated.Notes))
+                throw new InvalidDataException("Chart round-trip verification failed.");
+            if (File.Exists(path)) File.Replace(temporary, path, path + ".bak");
+            else File.Move(temporary, path);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
     }
 
     private static string GenerateBms(string songName, List<WavAnalyzer.BeatInfo> beats, int difficulty, float analyzedDurationSeconds, int laneCount)

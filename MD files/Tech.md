@@ -90,9 +90,9 @@ pause 중에는 lane key release가 판정을 확정하지 않습니다. resume 
 
 ## 오디오 시스템
 
-현재 BGM과 preview는 MCI alias를 사용합니다. hit sound는 BGM과 독립된 경로이지만 실제 게임 판정에서는 호출하지 않으며, Settings 미리듣기와 입력 calibration 박자에만 사용합니다.
+현재 BGM과 preview는 MCI alias를 사용합니다. hit sound는 BGM과 독립된 경로이며 일반 플레이/리플레이의 입력 판정, Settings 미리듣기, 입력 calibration에 사용합니다. 샘플은 설정 적용 시 준비하고 비동기 PlaySound의 메모리는 재생 중 pin합니다. 현재 SFX는 단일 채널이므로 동시치기 샘플을 믹싱하지 않습니다.
 
-`AudioClockDiagnostics`는 인게임 위치 sample과 wall clock 차이를 누적합니다. 재생 종료 시 포맷, sample 수, query 실패, 역행, 정방향 jump, stall, 평균/최대 jitter, 마지막 연속 구간 drift를 `%LOCALAPPDATA%/RhythmGame/logs`에 기록합니다. pause/resume은 별도 segment로 분리해 pause 시간을 drift로 오인하지 않습니다. 인게임 BGM의 MCI open/play/volume/pause/resume/stop 실패 코드도 같은 로그에 남습니다. Main BGM과 preview 명령 전체의 오류 계측은 아직 이 범위에 포함하지 않습니다.
+`AudioClockDiagnostics`는 인게임 위치 sample과 wall clock 차이를 누적합니다. 재생 종료 시 포맷, sample 수, query 실패, 역행, 정방향 jump, stall, 평균/최대 jitter, 마지막 연속 구간 drift를 `%LOCALAPPDATA%/RhythmGame/logs`에 기록합니다. pause/resume은 별도 segment로 분리해 pause 시간을 drift로 오인하지 않습니다. 인게임 BGM의 MCI open/play/volume/pause/resume/stop 실패 코드도 같은 로그에 남습니다. Main BGM과 preview를 포함한 MCI 명령 실패도 세션 ID, 채널, 명령 종류, 코드로 기록합니다. 같은 오류는 5초 간격으로 제한하며 명령의 파일 경로는 기록하지 않습니다. 메인/preview 시작 실패 시 열린 alias를 닫습니다.
 
 지원 탐색 확장자:
 
@@ -236,3 +236,17 @@ Settings, Statistics, Key Bindings, Input Calibration 계열의 주 제목은 �
 ```
 
 Release 검증은 실행 중인 `front interface\bin\Release\net9.0-windows\game start.exe`가 있으면 파일 잠금으로 실패할 수 있습니다. Release build 전에는 실행 중인 앱을 종료해야 합니다.
+
+
+## 품질 개선 구현 (2026-09-27)
+
+- `Forms/TutorialForm.cs`: 실제 GameEngine을 쓰는 5단계 연습과 임시 PCM 박자 트랙. `TutorialPromptVersion`, `TutorialCompleted`는 기존 설정 JSON에 기본값 호환으로 추가됩니다.
+- `Chart/ChartEditing.cs`: 스냅, 레인 반전, 밀도 계산. Undo/Redo는 노트, 첫 BPM, 선택 커서 상태를 복원합니다. 불가능한 일괄 편집은 전체 취소합니다.
+- `ChartGenerator.SaveUserChart`: 검증 → 임시 파일 → 정확한 노트 재파싱 비교 → File.Replace와 .bak 백업. 기존 BMS projection에 `#MUWORLD-NOTES 1`, `#MWNOTES`, `#MWTEMPO`를 추가합니다. lane-specific 사용자 차트는 자동 난이도 변환 없이 읽습니다. 상세 계약은 chart-format.md에 있습니다.
+- `Forms/GameForm_library_filters.cs`: native WinForms 필터. 필터/정렬 결과를 곡 배열과 조건별로 재사용하고 난이도를 라이브러리 세대 내에서 캐시합니다. 첫 파일 탐색과 첫 난이도 계산은 동기식이며 대규모 라이브러리 실측이 필요합니다.
+- `Data/CoverImageCache.cs`: 최대 24개, 최대 512px 표지 thumbnail. 수정 시각 변경 시 재로드하고 교체/종료 시 Dispose합니다. 실패도 캐시해 매 프레임 재시도하지 않습니다.
+- `Data/VisualSkin.cs`: 단일 디렉터리 이름 검증, manifest 256KiB, 이미지 16MiB/4096px 제한, 기존 스킨 Bitmap 해제. BGA에도 이미지 제한을 적용합니다.
+- `Data/FrameDiagnostics.cs`: 고정 histogram으로 p95/p99 프레임 간격, 최대 지연, allocation, private memory, GDI delta를 기록합니다. p95/p99는 1ms 단위이며 500ms 이상은 마지막 bucket에 집계합니다.
+- `Tests/QualityHarness.cs`: `--audio-repeat`, `--soak`, `--export-fixtures`. 자동 검증과 실기기/수동 검증의 구분은 quality-validation.md를 따릅니다.
+
+롤백 시 코드와 함께 새로 편집한 차트의 `.bak` 복구 여부를 검토합니다. 이전 앱도 BMS projection은 읽지만 임의 길이와 정확한 시각을 보장하지 않습니다. 데이터베이스 변경이나 새 NuGet 의존성은 없습니다.

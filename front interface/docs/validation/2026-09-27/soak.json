@@ -1,0 +1,135 @@
+[
+  {
+    "seconds": 30,
+    "gdi": 3,
+    "privateBytes": 20729856,
+    "p95DrawMs": 8,
+    "p99DrawMs": 10
+  },
+  {
+    "seconds": 60,
+    "gdi": 3,
+    "privateBytes": 19357696,
+    "p95DrawMs": 8,
+    "p99DrawMs": 11
+  },
+  {
+    "seconds": 90,
+    "gdi": 3,
+    "privateBytes": 19161088,
+    "p95DrawMs": 8,
+    "p99DrawMs": 10
+  },
+  {
+    "seconds": 120,
+    "gdi": 3,
+    "privateBytes": 18841600,
+    "p95DrawMs": 8,
+    "p99DrawMs": 10
+  },
+  {
+    "seconds": 150,
+    "gdi": 3,
+    "privateBytes": 19206144,
+    "p95DrawMs": 8,
+    "p99DrawMs": 10
+  },
+  {
+    "seconds": 180,
+    "gdi": 3,
+    "privateBytes": 19668992,
+    "p95DrawMs": 8,
+    "p99DrawMs": 10
+  },
+  {
+    "seconds": 210,
+    "gdi": 3,
+    "privateBytes": 20123648,
+    "p95DrawMs": 8,
+    "p99DrawMs": 10
+  },
+  {
+    "seconds": 240,
+    "gdi": 3,
+    "privateBytes": 19525632,
+    "p95DrawMs": 8,
+    "p99DrawMs": 10
+  },
+  {
+    "seconds": 270,
+    "gdi": 3,
+    "privateBytes": 20271104,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 300,
+    "gdi": 3,
+    "privateBytes": 19222528,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 330,
+    "gdi": 3,
+    "privateBytes": 20316160,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 360,
+    "gdi": 3,
+    "privateBytes": 19685376,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 390,
+    "gdi": 3,
+    "privateBytes": 19750912,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 420,
+    "gdi": 3,
+    "privateBytes": 19906560,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 450,
+    "gdi": 3,
+    "privateBytes": 19312640,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 480,
+    "gdi": 3,
+    "privateBytes": 19279872,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 510,
+    "gdi": 3,
+    "privateBytes": 20242432,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 540,
+    "gdi": 3,
+    "privateBytes": 19808256,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  },
+  {
+    "seconds": 570,
+    "gdi": 3,
+    "privateBytes": 19636224,
+    "p95DrawMs": 8,
+    "p99DrawMs": 9
+  }
+]

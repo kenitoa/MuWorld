@@ -7,20 +7,27 @@ namespace MuWorld.SelfTests;
 internal static class Program
 {
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        if (args.Length > 0) return QualityHarness.Run(args);
         var runner = new SelfTestRunner();
         return runner.RunAll();
     }
 }
 
-internal sealed class SelfTestRunner
+internal sealed partial class SelfTestRunner
 {
     private readonly List<string> _failures = [];
     private int _passed;
 
     public int RunAll()
     {
+        Run("Chart editing round-trip and rejected save preserves original", TestChartEditingPersistence);
+        Run("Chart editor undo redo transforms and layout", TestChartEditorWorkflow);
+        Run("Visual skin rejects unsafe names", TestSkinNames);
+        Run("Tutorial and fixed reference chart validation", TestTutorialAndFixtures);
+        Run("Library 100 song filter cache and conditions", TestLibraryFilters);
+        Run("Frame diagnostics percentiles", TestFrameDiagnostics);
         Run("ScoreManager unit calculations", TestScoreManager);
         Run("NoteLane BMS parse and validation", TestNoteLaneBmsParse);
         Run("NoteLane all lane-mode normalization", TestLaneModeChartNormalization);
@@ -1706,7 +1713,7 @@ internal sealed class SelfTestRunner
             Expect(string.IsNullOrEmpty(chartGrid.DefaultAction), "graphic chart grid has no Press default action");
             var backward = new KeyEventArgs(Keys.Shift | Keys.Tab);
             Expect((bool)handleAccessibilityKey.Invoke(form, [backward])!, "reverse focus navigation is handled on chart editor");
-            Expect(backward.SuppressKeyPress && accessibility.GetFocused()?.Name == "Preview", "reverse Tab skips trailing graphic node and focuses last interactive action");
+            Expect(backward.SuppressKeyPress && accessibility.GetFocused()?.Name == "LENGTH +", "reverse Tab skips trailing graphic node and focuses last interactive action");
 
             screenField.SetValue(form, Enum.Parse(screenField.FieldType, "Analyze"));
             highContrastField.SetValue(form, true);

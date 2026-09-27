@@ -138,6 +138,7 @@ public sealed partial class GameForm
                 {
                     UiScreen.Settings => $"{_screen}:{_settingsTabIndex}",
                     UiScreen.SongSelect => $"{_screen}:{_songSelectPageIndex}:{_songSelectSelectedIndex}:{_songSelectDifficultyIndex}:{_laneModeIndex}:{_songFavoritesOnly}:{_songSearchQuery}",
+                    UiScreen.ChartEditor => $"{_screen}:{_chartEditorInsertType}:{_chartEditorSubdivision}",
                     UiScreen.KeyBindings => $"{_screen}:{_keyBindingModeIndex}",
                     UiScreen.AchievementDetail => $"{_screen}:{_achievementDetailTabIndex}:{_achievementDetailPageIndex}",
                     UiScreen.Analyze => $"{_screen}:{_analyzeScore}:{_analyzeAccuracy:F2}:{_analyzeReplayStatus}",
@@ -148,9 +149,10 @@ public sealed partial class GameForm
         if (screenKey == _accessibleScreenKey && _accessibleNodes.Count > 0)
             return;
 
+        bool preserveEditorFocus = _screen == UiScreen.ChartEditor && _accessibleScreenKey.StartsWith("ChartEditor:", StringComparison.Ordinal);
         _accessibleScreenKey = screenKey;
         _accessibleNodes.Clear();
-        _keyboardFocusIndex = -1;
+        if (!preserveEditorFocus) _keyboardFocusIndex = -1;
 
         if (_engine.IsRunning && _isGamePaused)
         {
@@ -190,11 +192,12 @@ public sealed partial class GameForm
         switch (_screen)
         {
             case UiScreen.MainMenu:
-                AddAccessibleNode("Play", "Open song select.", GetMenuActionButtonBounds(1), AccessibleRole.PushButton, () => OpenMainMenuAction(1));
+                AddAccessibleNode("Tutorial", "Practice keys, tap, chords, long and slide. F1.", GetTutorialBounds(), AccessibleRole.PushButton, OpenTutorial);
                 AddAccessibleNode("Settings", "Open settings.", GetMenuTopSettingsButtonBounds(), AccessibleRole.PushButton, () => OpenMainMenuAction(0));
-                AddAccessibleNode("Statistics", "Open player statistics.", GetMenuPlayerBadgeBounds(), AccessibleRole.PushButton, () => OpenMainMenuAction(2));
+                AddAccessibleNode("Play", "Open song select.", GetMenuActionButtonBounds(1), AccessibleRole.PushButton, () => OpenMainMenuAction(1));
                 AddAccessibleNode("Restart", "Restart the game application.", GetMenuActionButtonBounds(3), AccessibleRole.PushButton, () => OpenMainMenuAction(3));
-                AddAccessibleNode("Exit", "Close the game.", GetExitButtonBounds(), AccessibleRole.PushButton, Close);
+                AddAccessibleNode("PLAYER STATS", "Open player statistics.", GetMenuPlayerBadgeBounds(), AccessibleRole.PushButton, () => OpenMainMenuAction(2));
+                AddAccessibleNode("Quit", "Close the game.", GetExitButtonBounds(), AccessibleRole.PushButton, Close);
                 break;
 
             case UiScreen.Settings:
@@ -261,7 +264,7 @@ public sealed partial class GameForm
                 break;
 
             case UiScreen.ChartEditor:
-                string[] actions = ["Back", "Save", "Undo", "Type", "BPM down", "BPM up", "Time down", "Time up", "Preview"];
+                string[] actions = GetChartEditorActions();
                 for (int i = 0; i < actions.Length; i++)
                 {
                     int action = i;
@@ -322,7 +325,7 @@ public sealed partial class GameForm
         AddAccessibleNode("Normal difficulty", "Select Normal difficulty.", new Rectangle(GetSongDifficultyBounds(panel).Left + GetSongDifficultyBounds(panel).Width / 3, GetSongDifficultyBounds(panel).Top, GetSongDifficultyBounds(panel).Width / 3, GetSongDifficultyBounds(panel).Height), AccessibleRole.PageTab, () => SelectSongDifficulty(1));
         AddAccessibleNode("Hard difficulty", "Select Hard difficulty.", new Rectangle(GetSongDifficultyBounds(panel).Left + 2 * GetSongDifficultyBounds(panel).Width / 3, GetSongDifficultyBounds(panel).Top, GetSongDifficultyBounds(panel).Width / 3, GetSongDifficultyBounds(panel).Height), AccessibleRole.PageTab, () => SelectSongDifficulty(2));
         AddAccessibleNode("Sort", "Cycle song sort mode.", GetSongSortButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongSortButtonBounds(panel).Center()));
-        AddAccessibleNode("Favorites filter", "Toggle favorites filter.", GetSongFavoriteFilterBounds(panel), AccessibleRole.CheckButton, () => HandleSongSelectMouseDown(GetSongFavoriteFilterBounds(panel).Center()));
+        AddAccessibleNode("Library filters", "Choose genre, source, favorites, recent play and level range. F2.", GetSongFavoriteFilterBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongFavoriteFilterBounds(panel).Center()));
         AddAccessibleNode("Rescan songs", "Rescan song library.", GetSongRescanButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongRescanButtonBounds(panel).Center()));
         AddAccessibleNode("Song detail", "Open selected song detail.", GetSongDetailButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongDetailButtonBounds(panel).Center()));
         AddAccessibleNode("Replay latest compatible", "Play the newest compatible saved replay for the selected song, difficulty, lane mode, chart snapshot, audio file, and game version.", GetSongPlayButtonBounds(panel).WithOffset(0, -(int)ScaleY(68f)), AccessibleRole.PushButton, StartReplayForSelectedSong);

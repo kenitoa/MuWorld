@@ -135,11 +135,11 @@ internal static class AudioFileCatalog
 
         string candidate = value.Trim();
         if (Path.IsPathRooted(candidate))
-            return File.Exists(candidate) ? candidate : string.Empty;
+            return candidate;
 
         string baseDir = Path.GetDirectoryName(audioPath) ?? AppContext.BaseDirectory;
         string resolved = Path.GetFullPath(Path.Combine(baseDir, candidate));
-        return File.Exists(resolved) ? resolved : string.Empty;
+        return resolved;
     }
 
     private static bool TryGetString(JsonElement root, string propertyName, out string value)

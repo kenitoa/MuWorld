@@ -16,13 +16,44 @@ internal sealed class AudioManager : IDisposable
 
     // winmm.dll P/Invoke — 히트 사운드용
     [DllImport("winmm.dll", SetLastError = true)]
-    private static extern bool PlaySound(byte[]? pszSound, IntPtr hmod, uint fdwSound);
+    private static extern bool PlaySound(IntPtr pszSound, IntPtr hmod, uint fdwSound);
+
+    private GCHandle _activeHitSound;
+
+    private void StopHitSound()
+    {
+        PlaySound(IntPtr.Zero, IntPtr.Zero, 0);
+        if (_activeHitSound.IsAllocated) _activeHitSound.Free();
+    }
 
     private const uint SND_ASYNC  = 0x0001;
     private const uint SND_MEMORY = 0x0004;
     // MCI P/Invoke — 인게임 BGM 재생 (PlaySound/SoundPlayer와 완전히 독립)
     [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
     private static extern int mciSendString(string command, StringBuilder? returnString, int returnSize, IntPtr hwndCallback);
+
+    // Log only operation/channel, never the command containing a local file path.
+    private readonly string _diagnosticSession = Guid.NewGuid().ToString("N");
+    private readonly Dictionary<string, long> _lastCommandFailure = [];
+
+    private int SendMci(string command, StringBuilder? result, int size, IntPtr callback)
+    {
+        int code = mciSendString(command, result, size, callback);
+        if (code != 0)
+        {
+            string operation = command.Split(' ', 2)[0];
+            string channel = command.Contains("previewbgm", StringComparison.Ordinal) ? "preview"
+                : command.Contains("mainbgm", StringComparison.Ordinal) ? "main" : "game";
+            string key = $"{channel}:{operation}:{code}";
+            long now = Environment.TickCount64;
+            if (!_lastCommandFailure.TryGetValue(key, out long previous) || now - previous >= 5000)
+            {
+                _lastCommandFailure[key] = now;
+                AppLogger.Info($"Audio command failure session={_diagnosticSession}, channel={channel}, operation={operation}, code={code}");
+            }
+        }
+        return code;
+    }
 
     private bool _mciOpen;
     private int _inGameBgmLengthMs;
@@ -70,9 +101,9 @@ internal sealed class AudioManager : IDisposable
             _bgmVolume = clamped;
             int mciVol = clamped * 10; // 0-100 -> 0-1000
             if (_mainBgmOpen)
-                mciSendString($"setaudio mainbgm volume to {mciVol}", null, 0, IntPtr.Zero);
+                SendMci($"setaudio mainbgm volume to {mciVol}", null, 0, IntPtr.Zero);
             if (_mciOpen)
-                mciSendString($"setaudio ingamebgm volume to {mciVol}", null, 0, IntPtr.Zero);
+                SendMci($"setaudio ingamebgm volume to {mciVol}", null, 0, IntPtr.Zero);
         }
     }
 
@@ -82,7 +113,7 @@ internal sealed class AudioManager : IDisposable
         {
             _previewVolume = Math.Clamp(volume, 0, 100);
             if (_previewBgmOpen)
-                mciSendString($"setaudio previewbgm volume to {_previewVolume * 10}", null, 0, IntPtr.Zero);
+                SendMci($"setaudio previewbgm volume to {_previewVolume * 10}", null, 0, IntPtr.Zero);
         }
     }
 
@@ -102,14 +133,20 @@ internal sealed class AudioManager : IDisposable
 
     public void PlayHit(int volume, Judgment judgment, bool mute = false)
     {
-        if (mute || _hitSoundMuted)
+        if (mute || _hitSoundMuted || volume <= 0)
             return;
 
         PrepareHitSounds(volume);
 
         if (_hitWavCache.TryGetValue(judgment, out byte[]? wav))
         {
-            PlaySound(wav, IntPtr.Zero, SND_ASYNC | SND_MEMORY);
+            StopHitSound();
+            _activeHitSound = GCHandle.Alloc(wav, GCHandleType.Pinned);
+            if (!PlaySound(_activeHitSound.AddrOfPinnedObject(), IntPtr.Zero, SND_ASYNC | SND_MEMORY))
+            {
+                _activeHitSound.Free();
+                AppLogger.Info("Hit sound playback failed.");
+            }
         }
     }
 
@@ -141,7 +178,7 @@ internal sealed class AudioManager : IDisposable
         _hitCts.Cancel();
         _hitCts.Dispose();
         _hitCts = new CancellationTokenSource();
-        PlaySound(null, IntPtr.Zero, 0);
+        StopHitSound();
         StopInGameBgm();
         StopMainScreenBgm();
         StopSongPreview();
@@ -167,7 +204,7 @@ internal sealed class AudioManager : IDisposable
         lock (_sync)
         {
             string safePath = $"\"{audioPath}\"";
-            int openResult = mciSendString($"open {safePath} type mpegvideo alias ingamebgm", null, 0, IntPtr.Zero);
+            int openResult = SendMci($"open {safePath} type mpegvideo alias ingamebgm", null, 0, IntPtr.Zero);
             if (openResult != 0)
             {
                 _mciOpen = false;
@@ -175,18 +212,18 @@ internal sealed class AudioManager : IDisposable
                 return;
             }
 
-            int formatResult = mciSendString("set ingamebgm time format milliseconds", null, 0, IntPtr.Zero);
-            int playResult = mciSendString("play ingamebgm", null, 0, IntPtr.Zero);
+            int formatResult = SendMci("set ingamebgm time format milliseconds", null, 0, IntPtr.Zero);
+            int playResult = SendMci("play ingamebgm", null, 0, IntPtr.Zero);
             if (formatResult != 0 || playResult != 0)
             {
                 AppLogger.Info($"MCI play failed formatCode={formatResult}, playCode={playResult}, format={Path.GetExtension(audioPath)}");
-                mciSendString("close ingamebgm", null, 0, IntPtr.Zero);
+                SendMci("close ingamebgm", null, 0, IntPtr.Zero);
                 _mciOpen = false;
                 return;
             }
 
             int mciVol = _bgmVolume * 10;
-            int volumeResult = mciSendString($"setaudio ingamebgm volume to {mciVol}", null, 0, IntPtr.Zero);
+            int volumeResult = SendMci($"setaudio ingamebgm volume to {mciVol}", null, 0, IntPtr.Zero);
             if (volumeResult != 0)
                 AppLogger.Info($"MCI volume command failed code={volumeResult}");
             _inGameBgmLengthMs = QueryMciInt("status ingamebgm length");
@@ -209,11 +246,11 @@ internal sealed class AudioManager : IDisposable
                 else
                     _clockDiagnostics.RecordQueryFailure();
 
-                int stopResult = mciSendString("stop ingamebgm", null, 0, IntPtr.Zero);
-                int closeResult = mciSendString("close ingamebgm", null, 0, IntPtr.Zero);
+                int stopResult = SendMci("stop ingamebgm", null, 0, IntPtr.Zero);
+                int closeResult = SendMci("close ingamebgm", null, 0, IntPtr.Zero);
                 if (stopResult != 0 || closeResult != 0)
                     AppLogger.Info($"MCI stop failed stopCode={stopResult}, closeCode={closeResult}");
-                AppLogger.Info(_clockDiagnostics.Snapshot().ToLogMessage());
+                AppLogger.Info($"session={_diagnosticSession} " + _clockDiagnostics.Snapshot().ToLogMessage());
                 _mciOpen = false;
                 _inGameBgmLengthMs = 0;
                 _inGameClockStopwatch.Reset();
@@ -240,7 +277,7 @@ internal sealed class AudioManager : IDisposable
             {
                 _clockDiagnostics.RecordQueryFailure();
             }
-            int result = mciSendString("pause ingamebgm", null, 0, IntPtr.Zero);
+            int result = SendMci("pause ingamebgm", null, 0, IntPtr.Zero);
             AppLogger.Info($"Audio pause positionMs={(int)MathF.Round(position * 1000f)}, result={result}");
             return result == 0;
         }
@@ -253,7 +290,7 @@ internal sealed class AudioManager : IDisposable
             if (!_mciOpen)
                 return true;
 
-            int result = mciSendString("resume ingamebgm", null, 0, IntPtr.Zero);
+            int result = SendMci("resume ingamebgm", null, 0, IntPtr.Zero);
             float position = 0f;
             if (TryQueryInGamePosition(out float measuredPosition))
             {
@@ -327,11 +364,11 @@ internal sealed class AudioManager : IDisposable
         _lastKnownFinished = false;
     }
 
-    private static bool TryQueryInGamePosition(out float positionSeconds)
+    private bool TryQueryInGamePosition(out float positionSeconds)
     {
         positionSeconds = 0f;
         var buffer = new StringBuilder(64);
-        int result = mciSendString("status ingamebgm position", buffer, buffer.Capacity, IntPtr.Zero);
+        int result = SendMci("status ingamebgm position", buffer, buffer.Capacity, IntPtr.Zero);
         return result == 0 && int.TryParse(buffer.ToString().Trim(), out int milliseconds) &&
                (positionSeconds = Math.Max(0, milliseconds) / 1000f) >= 0f;
     }
@@ -396,16 +433,20 @@ internal sealed class AudioManager : IDisposable
         {
             string safePath = $"\"{audioPath}\"";
             // mpegvideo 타입은 repeat를 지원함
-            int openResult = mciSendString($"open {safePath} type mpegvideo alias mainbgm", null, 0, IntPtr.Zero);
+            int openResult = SendMci($"open {safePath} type mpegvideo alias mainbgm", null, 0, IntPtr.Zero);
             if (openResult != 0)
             {
                 _mainBgmOpen = false;
                 return;
             }
 
-            mciSendString("play mainbgm repeat", null, 0, IntPtr.Zero);
+            if (SendMci("play mainbgm repeat", null, 0, IntPtr.Zero) != 0)
+            {
+                SendMci("close mainbgm", null, 0, IntPtr.Zero);
+                return;
+            }
             int mciVol = _bgmVolume * 10;
-            mciSendString($"setaudio mainbgm volume to {mciVol}", null, 0, IntPtr.Zero);
+            SendMci($"setaudio mainbgm volume to {mciVol}", null, 0, IntPtr.Zero);
             _mainBgmOpen = true;
         }
     }
@@ -416,8 +457,8 @@ internal sealed class AudioManager : IDisposable
         {
             if (_mainBgmOpen)
             {
-                mciSendString("stop mainbgm", null, 0, IntPtr.Zero);
-                mciSendString("close mainbgm", null, 0, IntPtr.Zero);
+                SendMci("stop mainbgm", null, 0, IntPtr.Zero);
+                SendMci("close mainbgm", null, 0, IntPtr.Zero);
                 _mainBgmOpen = false;
             }
         }
@@ -428,13 +469,16 @@ internal sealed class AudioManager : IDisposable
         StopSongPreview();
         StopMainScreenBgm();
 
+        if (!float.IsFinite(startSeconds) || !float.IsFinite(durationSeconds) ||
+            startSeconds < 0f || durationSeconds <= 0f || startSeconds + durationSeconds > int.MaxValue / 1000f)
+            return;
         if (!File.Exists(audioPath))
             return;
 
         lock (_sync)
         {
             string safePath = $"\"{audioPath}\"";
-            int openResult = mciSendString($"open {safePath} type mpegvideo alias previewbgm", null, 0, IntPtr.Zero);
+            int openResult = SendMci($"open {safePath} type mpegvideo alias previewbgm", null, 0, IntPtr.Zero);
             if (openResult != 0)
             {
                 _previewBgmOpen = false;
@@ -443,11 +487,14 @@ internal sealed class AudioManager : IDisposable
 
             int startMs = Math.Max(0, (int)MathF.Round(startSeconds * 1000f));
             int endMs = Math.Max(startMs + 1000, startMs + (int)MathF.Round(durationSeconds * 1000f));
-            int mciVol = Math.Clamp(volume > 0 ? volume : _previewVolume, 0, 100) * 10;
-            mciSendString("set previewbgm time format milliseconds", null, 0, IntPtr.Zero);
-            mciSendString($"setaudio previewbgm volume to {mciVol}", null, 0, IntPtr.Zero);
-            mciSendString($"play previewbgm from {startMs} to {endMs}", null, 0, IntPtr.Zero);
-            _previewBgmOpen = true;
+            int mciVol = Math.Clamp(volume, 0, 100) * 10;
+            int formatResult = SendMci("set previewbgm time format milliseconds", null, 0, IntPtr.Zero);
+            SendMci($"setaudio previewbgm volume to {mciVol}", null, 0, IntPtr.Zero);
+            int playResult = formatResult == 0
+                ? SendMci($"play previewbgm from {startMs} to {endMs}", null, 0, IntPtr.Zero) : formatResult;
+            _previewBgmOpen = playResult == 0;
+            if (!_previewBgmOpen)
+                SendMci("close previewbgm", null, 0, IntPtr.Zero);
         }
     }
 
@@ -457,8 +504,8 @@ internal sealed class AudioManager : IDisposable
         {
             if (_previewBgmOpen)
             {
-                mciSendString("stop previewbgm", null, 0, IntPtr.Zero);
-                mciSendString("close previewbgm", null, 0, IntPtr.Zero);
+                SendMci("stop previewbgm", null, 0, IntPtr.Zero);
+                SendMci("close previewbgm", null, 0, IntPtr.Zero);
                 _previewBgmOpen = false;
             }
         }
@@ -629,10 +676,10 @@ internal sealed class AudioManager : IDisposable
         return int.TryParse(text, out int value) ? value : 0;
     }
 
-    private static string QueryMciString(string command)
+    private string QueryMciString(string command)
     {
         var buffer = new StringBuilder(64);
-        int result = mciSendString(command, buffer, buffer.Capacity, IntPtr.Zero);
+        int result = SendMci(command, buffer, buffer.Capacity, IntPtr.Zero);
         return result == 0 ? buffer.ToString().Trim() : string.Empty;
     }
 
@@ -640,7 +687,7 @@ internal sealed class AudioManager : IDisposable
     {
         _hitCts.Cancel();
         _hitCts.Dispose();
-        PlaySound(null, IntPtr.Zero, 0);
+        StopHitSound();
         StopInGameBgm();
         StopMainScreenBgm();
         StopSongPreview();

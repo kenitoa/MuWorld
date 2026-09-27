@@ -86,8 +86,22 @@ public sealed partial class GameForm
         string[] audioFiles = AudioFileCatalog.DiscoverSongFiles(bgmDir);
 
         var metadataItems = new SongMetadata[audioFiles.Length];
+        LibraryStatus.Clear();
         for (int i = 0; i < audioFiles.Length; i++)
-            metadataItems[i] = AudioFileCatalog.ReadSongMetadata(audioFiles[i]);
+        {
+            try
+            {
+                metadataItems[i] = AudioFileCatalog.ReadSongMetadata(audioFiles[i]);
+                LibraryStatus[metadataItems[i].SongId] = InspectLibraryAssets(audioFiles[i], metadataItems[i]);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+            {
+                AppLogger.Error("Song metadata unavailable; continuing library scan.", ex);
+                metadataItems[i] = new SongMetadata { SongId = AudioFileCatalog.GetSongId(audioFiles[i]),
+                    Title = Path.GetFileNameWithoutExtension(audioFiles[i]), Artist = "Unknown Artist", Format = AudioFileCatalog.GetFormatLabel(audioFiles[i]) };
+                LibraryStatus[metadataItems[i].SongId] = "METADATA READ FAILED";
+            }
+        }
 
         SongData.UpsertMetadataBatch(metadataItems);
 
@@ -197,6 +211,8 @@ public sealed partial class GameForm
         string text = $"{song.Artist} | {song.Format} | {duration} | {bpm}{genre}{favorite}";
         if (!AudioAnalysisPipeline.CanAnalyze(song.FilePath))
             text += " | analysis needs ffmpeg";
+        if (LibraryStatus.TryGetValue(song.SongId, out string? status) && status.Length > 0)
+            text += " | " + status;
         if (!includeBest)
             return text;
 
@@ -365,7 +381,7 @@ public sealed partial class GameForm
         FillSongPhotoRect(g, 75f, 293f, 245f, 26f, 4f, Color.FromArgb(255, 5, 8, 17), Color.Transparent);
         DrawSongPhotoText(g, $"SORT  {SongSortLabels[_songSortModeIndex]}", font, subBrush, 76f, 297f, 205f, 22f);
         FillSongPhotoRect(g, 380f, 293f, 250f, 26f, 4f, Color.FromArgb(255, 5, 8, 17), Color.Transparent);
-        DrawSongPhotoText(g, _songFavoritesOnly ? "FILTER  FAVORITES" : "FILTER  ALL", font, subBrush, 404f, 297f, 210f, 22f);
+        DrawSongPhotoText(g, "FILTERS - F2", font, subBrush, 404f, 297f, 210f, 22f);
     }
 
     private void DrawSongListOverlay(Graphics g, Font titleFont, Font artistFont, Brush titleBrush, Brush subBrush)
@@ -1090,11 +1106,7 @@ public sealed partial class GameForm
 
         if (code == 41)
         {
-            _songFavoritesOnly = !_songFavoritesOnly;
-            _songSelectPageIndex = 0;
-            _songSelectSelectedIndex = 0;
-            _previewSongKey = string.Empty;
-            Invalidate();
+            OpenLibraryFilters();
             return;
         }
 
@@ -1150,7 +1162,15 @@ public sealed partial class GameForm
     {
         SongEntry[] songs = GetCurrentSongs();
         string query = _songSearchQuery.Trim();
+        string cacheKey = $"{query}|{_songFavoritesOnly}|{_songSortModeIndex}|{_songSelectDifficultyIndex}|{LaneCount}|{_libraryGenre}|{_librarySource}|{_libraryRecent}|{_libraryMinLevel}|{_libraryMaxLevel}|{DateTime.UtcNow:yyyyMMdd}";
+        if (ReferenceEquals(songs, _filteredSource) && cacheKey == _filteredKey) return _filteredResult;
+        if (!ReferenceEquals(songs, _filteredSource)) _libraryLevels.Clear();
         IEnumerable<SongEntry> filtered = songs;
+        if (_libraryGenre.Length > 0) filtered = filtered.Where(s => string.Equals(s.Genre, _libraryGenre, StringComparison.OrdinalIgnoreCase));
+        if (_librarySource.Length > 0) filtered = filtered.Where(s => string.Equals(s.Source, _librarySource, StringComparison.OrdinalIgnoreCase));
+        if (_libraryRecent) filtered = filtered.Where(s => ParseSortableUtc(s.LastPlayedUtc) >= DateTime.UtcNow.AddDays(-30).Ticks);
+        if (_libraryMinLevel > 1 || _libraryMaxLevel < 15)
+            filtered = filtered.Where(s => GetSongLevelForSort(s) >= _libraryMinLevel && GetSongLevelForSort(s) <= _libraryMaxLevel);
 
         if (_songFavoritesOnly)
             filtered = filtered.Where(song => song.IsFavorite);
@@ -1158,7 +1178,10 @@ public sealed partial class GameForm
         if (!string.IsNullOrEmpty(query))
             filtered = filtered.Where(song => IsSongMatch(song, query));
 
-        return ApplySongSort(filtered).ToArray();
+        _filteredResult = ApplySongSort(filtered).ToArray();
+        _filteredSource = songs;
+        _filteredKey = cacheKey;
+        return _filteredResult;
     }
 
     private IEnumerable<SongEntry> ApplySongSort(IEnumerable<SongEntry> songs)
@@ -1178,8 +1201,20 @@ public sealed partial class GameForm
 
     private int GetSongLevelForSort(SongEntry song)
     {
-        ChartValidationResult result = NoteLane.LoadValidatedChart(song.Title, song.Artist, _songSelectDifficultyIndex, LaneCount);
-        return result.Difficulty.Level;
+        var key = (song.SongId, _songSelectDifficultyIndex, LaneCount);
+        if (_libraryLevels.TryGetValue(key, out int level)) return level;
+        try
+        {
+            level = NoteLane.LoadValidatedChart(song.Title, song.Artist, _songSelectDifficultyIndex, LaneCount).Difficulty.Level;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or System.Text.Json.JsonException or UnauthorizedAccessException)
+        {
+            AppLogger.Error("Chart unavailable while sorting library.", ex);
+            LibraryStatus[song.SongId] = "CHART READ FAILED";
+            level = 0;
+        }
+        _libraryLevels[key] = level;
+        return level;
     }
 
     private static long ParseSortableUtc(string value)
@@ -1584,25 +1619,27 @@ public sealed partial class GameForm
             string.Empty));
     }
 
-    private static bool TryDrawCoverImage(Graphics g, Rectangle bounds, string? coverPath)
-    {
-        if (string.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
-            return false;
+    private readonly CoverImageCache _coverImages = new();
 
-        try
+    private bool TryDrawCoverImage(Graphics g, Rectangle bounds, string? coverPath)
+    {
+        if (string.IsNullOrWhiteSpace(coverPath)) return false;
+        Image? image = _coverImages.Get(coverPath);
+        if (image is null)
         {
-            using Image image = Image.FromFile(coverPath);
-            float scale = Math.Max(bounds.Width / (float)image.Width, bounds.Height / (float)image.Height);
-            float width = image.Width * scale;
-            float height = image.Height * scale;
-            RectangleF dest = new(bounds.Left + (bounds.Width - width) / 2f, bounds.Top + (bounds.Height - height) / 2f, width, height);
-            g.DrawImage(image, dest);
-            return true;
-        }
-        catch
-        {
+            foreach (SongEntry song in _cachedSongList ?? [])
+                if (song.CoverPath == coverPath) LibraryStatus[song.SongId] = "COVER LOAD FAILED";
             return false;
         }
+        float scale = Math.Max(bounds.Width / (float)image.Width, bounds.Height / (float)image.Height);
+        float width = image.Width * scale;
+        float height = image.Height * scale;
+        RectangleF dest = new(bounds.Left + (bounds.Width - width) / 2f, bounds.Top + (bounds.Height - height) / 2f, width, height);
+        GraphicsState state = g.Save();
+        g.SetClip(bounds, CombineMode.Intersect);
+        g.DrawImage(image, dest);
+        g.Restore(state);
+        return true;
     }
 
     private static void DrawSongTitleNote(Graphics g, float x, float y, Color color)

@@ -45,7 +45,7 @@ MuWorld uses a compact BMS subset for generated and user-edited charts.
 - `03`: legacy Slide, moves to the next lane
 - `31` to `37`: Slide with encoded end lane 1 to 7
 
-Long and Slide duration are currently engine defaults. The chart editor preserves note type and slide end lane, but not arbitrary per-note duration yet.
+Legacy BMS tokens use engine-default Long/Slide durations. Newly edited charts additionally store the versioned MuWorld extension below to preserve arbitrary durations and exact timestamps.
 
 ## Validation Rules
 
@@ -74,3 +74,20 @@ The displayed level is calculated from:
 - hand movement
 
 The result is clamped to `Lv.1` through `Lv.15`.
+
+
+## Exact user-chart extension v1
+
+The editor retains a legacy BMS projection and appends:
+
+```text
+#MUWORLD-NOTES 1
+#MWNOTES [{"Time":1.125,"Lane":0,"Type":1,"Duration":1.25,"EndLane":0}]
+#MWTEMPO [{"Time":0,"Bpm":120},{"Time":32,"Bpm":150}]
+```
+
+Time and Duration are seconds, lanes are zero-based, and Type is 0=Tap, 1=Long, 2=Slide. The exact notes replace the projected channel notes in current MuWorld. The tempo map uses absolute seconds, starts at zero, and has increasing unique timestamps with positive finite BPM. Old extension-v1 files without MWTEMPO derive their map from BMS headers. The editor preserves imported tempo changes; BPM +/- changes the first segment without retiming notes. Lane-specific authored charts are not remapped or converted into other note types on playback.
+
+Unsupported extension versions and unreadable payloads produce an explicit error and an empty playable chart, rather than a substitute pattern. The editor blocks opening unreadable charts. Empty user charts stay empty and cannot start gameplay. Saved charts are validated before replacing the original, and the previous file is retained as `.bak`. Invalid/overlapping notes block saving. Exact payloads are limited to 200000 notes and 32MiB on reading.
+
+Older versions only understand the BMS projection and may change timestamps/durations. Restore the pre-edit `.bak` when rolling back to an old application and exact compatibility is required.

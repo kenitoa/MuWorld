@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace RhythmGame;
 
-internal sealed record VisualSkin
+internal sealed record VisualSkin : IDisposable
 {
     public const string DefaultName = "default";
 
@@ -46,6 +46,11 @@ internal sealed record VisualSkin
 
     public static VisualSkin Load(string name)
     {
+        if (!IsValidName(name))
+        {
+            AppLogger.Info("Visual skin rejected: invalid directory name.");
+            return new VisualSkin();
+        }
         string normalized = string.IsNullOrWhiteSpace(name) ? DefaultName : name.Trim();
         string? directory = FindSkinDirectory(normalized);
         if (directory is null)
@@ -64,6 +69,16 @@ internal sealed record VisualSkin
         return ApplyManifest(skin, Path.Combine(directory, "skin.json"));
     }
 
+    internal static bool IsValidName(string name) => !string.IsNullOrWhiteSpace(name) &&
+        name is not "." and not ".." && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 &&
+        !name.Contains('/') && !name.Contains('\\') && name == name.Trim();
+
+    public void Dispose()
+    {
+        foreach (Bitmap? bitmap in new[] { NoteBody, LongTail, SlideArrow, HitBurst, MissEffect })
+            bitmap?.Dispose();
+    }
+
     public Color GetLaneColor(int lane, Color fallback)
     {
         return LaneColors.Length == 0 ? fallback : LaneColors[Math.Clamp(lane, 0, LaneColors.Length - 1) % LaneColors.Length];
@@ -76,6 +91,8 @@ internal sealed record VisualSkin
 
         try
         {
+            if (new FileInfo(manifestPath).Length > 256 * 1024)
+                throw new InvalidDataException("Skin manifest exceeds 256 KiB.");
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(manifestPath));
             JsonElement root = document.RootElement;
             return skin with
@@ -128,7 +145,11 @@ internal sealed record VisualSkin
 
             try
             {
+                if (new FileInfo(path).Length > 16 * 1024 * 1024)
+                    throw new InvalidDataException("Skin image exceeds 16 MiB.");
                 using var source = new Bitmap(path);
+                if (source.Width > 4096 || source.Height > 4096 || (long)source.Width * source.Height > 16777216)
+                    throw new InvalidDataException("Skin image exceeds 4096 pixels per side.");
                 return new Bitmap(source);
             }
             catch (Exception ex)

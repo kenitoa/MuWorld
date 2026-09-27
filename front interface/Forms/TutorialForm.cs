@@ -26,19 +26,24 @@ internal sealed class TutorialForm : Form
         _keys = keys.ToArray();
         _engine.AudioOffsetSeconds = offsetMs / 1000f;
         Text = "MuWorld 처음 플레이 연습";
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
         ClientSize = new Size(900, 640);
         MinimumSize = new Size(720, 580);
         StartPosition = FormStartPosition.CenterParent;
         KeyPreview = true;
         DoubleBuffered = true;
-        BackColor = SystemColors.Window;
-        ForeColor = SystemColors.WindowText;
+        BackColor = InterfaceTheme.Background;
+        ForeColor = InterfaceTheme.Text;
         Font = new Font("Segoe UI", 12);
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 50, AutoSize = true };
         var calibrate = new Button { Text = "타이밍 보정", AutoSize = true };
         var skip = new Button { Text = "곡 선택으로", AutoSize = true };
         buttons.Controls.AddRange([_retry, _next, calibrate, skip]);
         Controls.AddRange([_instructions, _feedback, buttons]);
+        InterfaceTheme.StyleControls(this);
+        _instructions.Padding = new Padding(24, 16, 24, 0);
+        _feedback.Padding = new Padding(24, 8, 24, 0);
         _retry.Click += (_, _) => StartStage();
         _next.Click += (_, _) => { StopStage(); if (++_stage >= 5) { Completed = true; Close(); } else ShowStage(); };
         calibrate.Click += (_, _) => { CalibrateRequested = true; Close(); };
@@ -124,6 +129,7 @@ internal sealed class TutorialForm : Form
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        if (e.KeyCode == Keys.Escape) { StopStage(); Close(); e.SuppressKeyPress = true; return; }
         int lane = Array.IndexOf(_keys, e.KeyCode);
         if (!_engine.IsRunning || lane < 0) return;
         e.SuppressKeyPress = true;
@@ -149,13 +155,16 @@ internal sealed class TutorialForm : Form
         base.OnPaint(e);
         float width = (ClientSize.Width - 80f) / _keys.Length;
         float hitY = ClientSize.Height - 155f;
-        using var pen = new Pen(ForeColor, 2);
-        using var brush = new SolidBrush(ForeColor);
+        using var pen = new Pen(SystemInformation.HighContrast ? ForeColor : InterfaceTheme.Accent, 2);
+        using var brush = new SolidBrush(SystemInformation.HighContrast ? ForeColor : InterfaceTheme.Accent);
         e.Graphics.DrawLine(pen, 40, hitY, ClientSize.Width - 40, hitY);
         for (int lane = 0; lane < _keys.Length; lane++)
         {
             float x = 40 + lane * width;
-            e.Graphics.DrawLine(pen, x, 115, x, hitY);
+            using var laneBrush = new SolidBrush(_held.Contains(_keys[lane]) ? InterfaceTheme.Raised : InterfaceTheme.Surface);
+            e.Graphics.FillRectangle(laneBrush, x + 1, 115, width - 2, hitY - 115);
+            using var divider = new Pen(InterfaceTheme.Border);
+            e.Graphics.DrawLine(divider, x, 115, x, hitY);
             e.Graphics.DrawString(_keys[lane].ToString(), Font, brush, x + 8, hitY + 8);
         }
         foreach (Note note in _engine.Notes.Where(n => n.State is NoteState.Active or NoteState.Holding))

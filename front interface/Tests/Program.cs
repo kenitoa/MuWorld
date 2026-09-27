@@ -28,6 +28,8 @@ internal sealed partial class SelfTestRunner
         Run("Tutorial and fixed reference chart validation", TestTutorialAndFixtures);
         Run("Library 100 song filter cache and conditions", TestLibraryFilters);
         Run("Frame diagnostics percentiles", TestFrameDiagnostics);
+        Run("Interface viewport actions and continuous selection", TestInterfaceLayoutAndActions);
+        Run("Settings draft rollback and editor property validation", TestSettingsDraftAndEditorValues);
         Run("ScoreManager unit calculations", TestScoreManager);
         Run("NoteLane BMS parse and validation", TestNoteLaneBmsParse);
         Run("NoteLane all lane-mode normalization", TestLaneModeChartNormalization);
@@ -1512,7 +1514,7 @@ internal sealed partial class SelfTestRunner
         RectangleF rail = (RectangleF)getRail.Invoke(form, [speedPanel])!;
         Expect(speedPanel.Contains(speedValue), $"speed value stays inside panel at {size.Width}x{size.Height}");
         Expect(speedPanel.Contains(minus) && speedPanel.Contains(plus) && speedPanel.Contains(rail), $"speed controls stay inside panel at {size.Width}x{size.Height}");
-        Expect(speedValue.Bottom < minus.Top && speedValue.Bottom < plus.Top, $"speed value does not overlap buttons at {size.Width}x{size.Height}");
+        Expect(!speedValue.IntersectsWith(minus) && !speedValue.IntersectsWith(plus), $"speed value does not overlap buttons at {size.Width}x{size.Height}");
         Expect(rail.Left > minus.Right && rail.Right < plus.Left, $"speed rail stays between buttons at {size.Width}x{size.Height}");
         Expect(rail.Top < minus.Bottom && rail.Bottom > minus.Top, $"speed rail vertically aligns with buttons at {size.Width}x{size.Height}");
 
@@ -1713,7 +1715,7 @@ internal sealed partial class SelfTestRunner
             Expect(string.IsNullOrEmpty(chartGrid.DefaultAction), "graphic chart grid has no Press default action");
             var backward = new KeyEventArgs(Keys.Shift | Keys.Tab);
             Expect((bool)handleAccessibilityKey.Invoke(form, [backward])!, "reverse focus navigation is handled on chart editor");
-            Expect(backward.SuppressKeyPress && accessibility.GetFocused()?.Name == "LENGTH +", "reverse Tab skips trailing graphic node and focuses last interactive action");
+            Expect(backward.SuppressKeyPress && accessibility.GetFocused()?.Name == "EDIT VALUES", "reverse Tab skips trailing graphic node and focuses last interactive action");
 
             screenField.SetValue(form, Enum.Parse(screenField.FieldType, "Analyze"));
             highContrastField.SetValue(form, true);

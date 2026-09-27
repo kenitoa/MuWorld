@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj": {}
+    "C:\\Users\\abc20\\Documents\\GitHub\\MuWorld\\front interface\\RhythmGame.csproj": {}
   },
   "projects": {
-    "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj": {
+    "C:\\Users\\abc20\\Documents\\GitHub\\MuWorld\\front interface\\RhythmGame.csproj": {
       "version": "1.1.0",
       "restore": {
-        "projectUniqueName": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj",
+        "projectUniqueName": "C:\\Users\\abc20\\Documents\\GitHub\\MuWorld\\front interface\\RhythmGame.csproj",
         "projectName": "game start",
-        "projectPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\RhythmGame.csproj",
+        "projectPath": "C:\\Users\\abc20\\Documents\\GitHub\\MuWorld\\front interface\\RhythmGame.csproj",
         "packagesPath": "C:\\Users\\abc20\\.nuget\\packages\\",
-        "outputPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\obj\\",
+        "outputPath": "C:\\Users\\abc20\\Documents\\GitHub\\MuWorld\\front interface\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\abc20\\AppData\\Roaming\\NuGet\\NuGet.Config"
@@ -62,7 +62,7 @@
               "privateAssets": "none"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Users\\abc20\\Desktop\\만든 것들\\MuWorld\\front interface\\dotnet\\sdk\\9.0.314/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "C:\\Users\\abc20\\Documents\\GitHub\\MuWorld\\front interface\\dotnet\\sdk\\9.0.314/PortableRuntimeIdentifierGraph.json"
         }
       }
     }

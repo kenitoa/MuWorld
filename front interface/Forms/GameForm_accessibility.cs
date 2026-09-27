@@ -192,10 +192,10 @@ public sealed partial class GameForm
         switch (_screen)
         {
             case UiScreen.MainMenu:
-                AddAccessibleNode("Tutorial", "Practice keys, tap, chords, long and slide. F1.", GetTutorialBounds(), AccessibleRole.PushButton, OpenTutorial);
+                AddAccessibleNode("Song select", "Open song select.", GetMenuActionButtonBounds(1), AccessibleRole.PushButton, () => OpenMainMenuAction(1));
+                AddAccessibleNode("First play tutorial · F1", "Practice keys, tap, chords, long and slide. F1.", GetTutorialBounds(), AccessibleRole.PushButton, OpenTutorial);
                 AddAccessibleNode("Settings", "Open settings.", GetMenuTopSettingsButtonBounds(), AccessibleRole.PushButton, () => OpenMainMenuAction(0));
-                AddAccessibleNode("Play", "Open song select.", GetMenuActionButtonBounds(1), AccessibleRole.PushButton, () => OpenMainMenuAction(1));
-                AddAccessibleNode("Restart", "Restart the game application.", GetMenuActionButtonBounds(3), AccessibleRole.PushButton, () => OpenMainMenuAction(3));
+                AddAccessibleNode("Restart application", "Restart the game application.", GetMenuActionButtonBounds(3), AccessibleRole.PushButton, () => OpenMainMenuAction(3));
                 AddAccessibleNode("PLAYER STATS", "Open player statistics.", GetMenuPlayerBadgeBounds(), AccessibleRole.PushButton, () => OpenMainMenuAction(2));
                 AddAccessibleNode("Quit", "Close the game.", GetExitButtonBounds(), AccessibleRole.PushButton, Close);
                 break;
@@ -277,6 +277,7 @@ public sealed partial class GameForm
 
     private void AddSettingsAccessibleNodes()
     {
+        BeginSettingsDraft();
         for (int i = 0; i < SettingsTabLabels.Length; i++)
         {
             int tab = i;
@@ -294,7 +295,7 @@ public sealed partial class GameForm
         AddSliderNode("Note speed", "Adjust note scroll speed.", SettingsSlider.NoteSpeed);
         AddSliderNode("Audio offset", "Adjust audio offset in milliseconds.", SettingsSlider.AudioOffset);
         AddAccessibleNode("Hit sound skin", "Cycle hit sound skin.", GetSettingsSegmentBounds("hitskin"), AccessibleRole.ComboBox, () => CycleHitSoundSkin(1), delta => CycleHitSoundSkin(delta));
-        AddAccessibleNode("Hit sound mute", "Toggle hit sound mute.", GetSettingsToggleBounds("hitmute"), AccessibleRole.CheckButton, () => HandleSettingsMouseDown(GetSettingsToggleBounds("hitmute").Center()));
+        AddAccessibleNode("Hit sound enabled", "Enable or disable hit sounds.", GetSettingsToggleBounds("hitmute"), AccessibleRole.CheckButton, () => HandleSettingsMouseDown(GetSettingsToggleBounds("hitmute").Center()));
         AddAccessibleNode("Hit pitch", "Cycle hit sound pitch.", GetSettingsSegmentBounds("hitpitch"), AccessibleRole.ComboBox, () => CycleHitPitch(1), delta => CycleHitPitch(delta));
         AddAccessibleNode("Lane mode", "Choose 4K, 5K, 6K, or 7K lane mode.", GetSettingsSegmentBounds("lanemode"), AccessibleRole.ComboBox, () => CycleLaneModeSetting(1), delta => CycleLaneModeSetting(delta));
         AddAccessibleNode("Calibration", "Open input latency calibration.", GetCalibrationEntryButtonBounds(), AccessibleRole.PushButton, () => HandleSettingsMouseDown(GetCalibrationEntryButtonBounds().Center()));
@@ -319,22 +320,32 @@ public sealed partial class GameForm
     private void AddSongSelectAccessibleNodes()
     {
         Rectangle panel = GetSongSelectPanelBounds();
+        for (int mode = 0; mode < LaneModes.Length; mode++)
+        {
+            int captured = mode;
+            AddAccessibleNode($"{LaneModes[mode].Count}K", "Select key mode.", GetLibraryLaneBounds(mode), AccessibleRole.PageTab,
+                () => HandleSongSelectMouseDown(GetLibraryLaneBounds(captured).Center()));
+        }
+        AddAccessibleNode("Clear filters", "Remove all library filters.", GetLibraryClearFiltersBounds(), AccessibleRole.PushButton,
+            () => HandleSongSelectMouseDown(GetLibraryClearFiltersBounds().Center()));
         AddAccessibleNode("Close song select", "Return to main menu.", GetSongSelectCloseButtonBounds(), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongSelectCloseButtonBounds().Center()));
         AddAccessibleNode("Search", "Focus song search box.", GetSongSearchBounds(panel), AccessibleRole.Text, () => { _isSongSearchFocused = true; Invalidate(); });
-        AddAccessibleNode("Easy difficulty", "Select Easy difficulty.", new Rectangle(GetSongDifficultyBounds(panel).Left, GetSongDifficultyBounds(panel).Top, GetSongDifficultyBounds(panel).Width / 3, GetSongDifficultyBounds(panel).Height), AccessibleRole.PageTab, () => SelectSongDifficulty(0));
-        AddAccessibleNode("Normal difficulty", "Select Normal difficulty.", new Rectangle(GetSongDifficultyBounds(panel).Left + GetSongDifficultyBounds(panel).Width / 3, GetSongDifficultyBounds(panel).Top, GetSongDifficultyBounds(panel).Width / 3, GetSongDifficultyBounds(panel).Height), AccessibleRole.PageTab, () => SelectSongDifficulty(1));
-        AddAccessibleNode("Hard difficulty", "Select Hard difficulty.", new Rectangle(GetSongDifficultyBounds(panel).Left + 2 * GetSongDifficultyBounds(panel).Width / 3, GetSongDifficultyBounds(panel).Top, GetSongDifficultyBounds(panel).Width / 3, GetSongDifficultyBounds(panel).Height), AccessibleRole.PageTab, () => SelectSongDifficulty(2));
+        AddAccessibleNode("Easy difficulty", "Select Easy difficulty.", GetDifficultyChoiceButtonBounds(0), AccessibleRole.PageTab, () => SelectSongDifficulty(0));
+        AddAccessibleNode("Normal difficulty", "Select Normal difficulty.", GetDifficultyChoiceButtonBounds(1), AccessibleRole.PageTab, () => SelectSongDifficulty(1));
+        AddAccessibleNode("Hard difficulty", "Select Hard difficulty.", GetDifficultyChoiceButtonBounds(2), AccessibleRole.PageTab, () => SelectSongDifficulty(2));
         AddAccessibleNode("Sort", "Cycle song sort mode.", GetSongSortButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongSortButtonBounds(panel).Center()));
         AddAccessibleNode("Library filters", "Choose genre, source, favorites, recent play and level range. F2.", GetSongFavoriteFilterBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongFavoriteFilterBounds(panel).Center()));
         AddAccessibleNode("Rescan songs", "Rescan song library.", GetSongRescanButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongRescanButtonBounds(panel).Center()));
         AddAccessibleNode("Song detail", "Open selected song detail.", GetSongDetailButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongDetailButtonBounds(panel).Center()));
-        AddAccessibleNode("Replay latest compatible", "Play the newest compatible saved replay for the selected song, difficulty, lane mode, chart snapshot, audio file, and game version.", GetSongPlayButtonBounds(panel).WithOffset(0, -(int)ScaleY(68f)), AccessibleRole.PushButton, StartReplayForSelectedSong);
+        AddAccessibleNode("Replay latest compatible", "Play the newest compatible saved replay for the selected song, difficulty, lane mode, chart snapshot, audio file, and game version.", GetLibraryToolBounds(2), AccessibleRole.PushButton, StartReplayForSelectedSong);
 
+        AddAccessibleNode("Editor", "Edit selected chart.", GetLibraryToolBounds(3), AccessibleRole.PushButton,
+            () => HandleSongSelectMouseDown(GetLibraryToolBounds(3).Center()));
         Rectangle list = GetSongListBounds(panel);
         SongEntry[] songs = GetFilteredSongs();
         for (int i = 0; i < SongRowsPerPage; i++)
         {
-            int songIndex = _songSelectPageIndex * SongRowsPerPage + i;
+            int songIndex = GetSongFirstVisibleIndex() + i;
             if (songIndex >= songs.Length)
                 continue;
             int captured = songIndex;
@@ -342,8 +353,8 @@ public sealed partial class GameForm
             AddAccessibleNode($"Song {songs[songIndex].Title}", BuildSongMetadata(songs[songIndex], includeBest: true), row, AccessibleRole.ListItem, () => SelectSongByIndex(captured));
         }
 
-        AddAccessibleNode("Previous song page", "Move to previous song page.", GetSongPrevButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongPrevButtonBounds(panel).Center()));
-        AddAccessibleNode("Next song page", "Move to next song page.", GetSongNextButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongNextButtonBounds(panel).Center()));
+        AddAccessibleNode("UP", "Select previous song.", GetSongPrevButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongPrevButtonBounds(panel).Center()));
+        AddAccessibleNode("DOWN", "Select next song.", GetSongNextButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongNextButtonBounds(panel).Center()));
         AddAccessibleNode("Play selected song", "Start the selected chart.", GetSongPlayButtonBounds(panel), AccessibleRole.PushButton, () => HandleSongSelectMouseDown(GetSongPlayButtonBounds(panel).Center()));
     }
 

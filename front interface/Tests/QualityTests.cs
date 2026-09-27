@@ -86,7 +86,7 @@ internal sealed partial class SelfTestRunner
         accessibility.GetChildCount();
         Call("HandleChartEditorAction", 10);
         accessibility.GetChildCount();
-        Expect(accessibility.GetChild(10)?.Name == "SNAP 6", "accessible snap name tracks visible control");
+        Expect(accessibility.GetChild(10)?.Name == "SNAP 1/6 BEAT", "accessible snap name tracks visible control");
         Call("HandleChartEditorAction", 19);
         FieldInfo notesField = typeof(GameForm).GetField("_chartEditorNotes", flags)!;
         var notes = (List<LaneNote>)notesField.GetValue(form)!;

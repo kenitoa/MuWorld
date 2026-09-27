@@ -4,22 +4,48 @@ namespace RhythmGame;
 
 public sealed partial class GameForm
 {
+    private UserSettings? _settingsDraft;
+    private bool SettingsHaveChanges => _settingsDraft is not null &&
+        System.Text.Json.JsonSerializer.Serialize(_settingsDraft) !=
+        System.Text.Json.JsonSerializer.Serialize(CreateUserSettingsSnapshot());
+
+    private void BeginSettingsDraft() => _settingsDraft ??= CreateUserSettingsSnapshot();
+
+    private void CancelSettingsDraft()
+    {
+        if (_settingsDraft is not UserSettings snapshot) return;
+        _settingsDraft = null;
+        ApplyUserSettingsSnapshot(snapshot);
+        ApplySettingsToRuntime();
+        _settingsOpenDropdownKey = string.Empty;
+        _accessibleScreenKey = string.Empty;
+    }
+
+    private void CommitSettingsDraft()
+    {
+        _settingsDraft = null;
+        ApplySettingsToRuntime();
+        SaveUserSettings();
+        BeginSettingsDraft();
+    }
+
     private int _settingsTabIndex;
     private string _settingsOpenDropdownKey = string.Empty;
     private static readonly string[] SettingsTabLabels = ["AUDIO", "GAMEPLAY", "CONTROLS", "DISPLAY", "SYSTEM"];
 
     private void DrawSettings(Graphics g)
     {
+        BeginSettingsDraft();
         DrawSettingsBackground(g);
 
         Color accent = GetAccentColor();
         using var brandFont = new Font("Segoe UI", Math.Max(8f, MenuS(15f)), FontStyle.Regular);
         using var titleFont = new Font("Segoe UI", Math.Max(17f, MenuS(35f)), FontStyle.Regular);
-        using var subtitleFont = new Font("Segoe UI", Math.Max(8f, MenuS(14f)), FontStyle.Regular);
-        using var navFont = new Font("Segoe UI", Math.Max(8.5f, MenuS(13.5f)), FontStyle.Regular);
-        using var labelFont = new Font("Segoe UI", Math.Max(8.5f, MenuS(14f)), FontStyle.Regular);
-        using var valueFont = new Font("Segoe UI", Math.Max(8f, MenuS(12.5f)), FontStyle.Regular);
-        using var actionFont = new Font("Segoe UI", Math.Max(8f, MenuS(13f)), FontStyle.Regular);
+        using var subtitleFont = new Font("Segoe UI", Math.Max(8f, MenuS(14f) * _textScalePercent / 100f), FontStyle.Regular);
+        using var navFont = new Font("Segoe UI", Math.Max(8.5f, MenuS(13.5f) * _textScalePercent / 100f), FontStyle.Regular);
+        using var labelFont = new Font("Segoe UI", Math.Max(8.5f, MenuS(14f) * _textScalePercent / 100f), FontStyle.Regular);
+        using var valueFont = new Font("Segoe UI", Math.Max(8f, MenuS(12.5f) * _textScalePercent / 100f), FontStyle.Regular);
+        using var actionFont = new Font("Segoe UI", Math.Max(8f, MenuS(13f) * _textScalePercent / 100f), FontStyle.Regular);
         using var titleBrush = new SolidBrush(Color.FromArgb(238, 244, 255));
         using var textBrush = new SolidBrush(Color.FromArgb(215, 220, 234));
         using var dimBrush = new SolidBrush(Color.FromArgb(150, 158, 178));
@@ -33,9 +59,9 @@ public sealed partial class GameForm
         DrawSettingsTabs(g, panel, navFont, accent);
         DrawSettingsRows(g, panel, labelFont, valueFont, textBrush, dimBrush, accent);
         DrawSettingsDropdownList(g, valueFont, textBrush, dimBrush, accent);
-        DrawSettingsActionButton(g, GetResetButtonBounds(), "RESET", false, actionFont, accent);
+        DrawSettingsActionButton(g, GetResetButtonBounds(), "RESET ALL", false, actionFont, accent);
         DrawSettingsActionButton(g, GetSettingsCancelButtonBounds(), "CANCEL", false, actionFont, accent);
-        DrawSettingsActionButton(g, GetSettingsApplyButtonBounds(), "APPLY", true, actionFont, accent);
+        DrawSettingsActionButton(g, GetSettingsApplyButtonBounds(), SettingsHaveChanges ? "APPLY CHANGES" : "SAVED", SettingsHaveChanges, actionFont, accent);
         DrawSettingsBackHint(g, GetBackButtonBounds(), actionFont, dimBrush);
     }
 
@@ -320,7 +346,7 @@ public sealed partial class GameForm
         };
         g.FillPath(glow, glowPath);
         using var line = new Pen(Color.FromArgb(200, accent), Math.Max(1f, MenuS(1f)));
-        g.DrawLine(line, active.Left - MenuS(6f), active.Top + MenuS(36f), active.Left + MenuS(150f), active.Top + MenuS(36f));
+        g.DrawLine(line, active.Left - MenuS(6f), active.Top + MenuS(44f), active.Left + MenuS(150f), active.Top + MenuS(44f));
     }
 
     private void DrawSettingsRows(Graphics g, Rectangle panel, Font labelFont, Font valueFont, Brush textBrush, Brush dimBrush, Color accent)
@@ -336,9 +362,9 @@ public sealed partial class GameForm
         switch (_settingsTabIndex)
         {
             case 0:
-                DrawSettingsLabel(g, "Master Volume", 0, labelFont, textBrush);
+                DrawSettingsLabel(g, "Music volume", 0, labelFont, textBrush);
                 DrawSlider(g, SettingsSlider.Bgm, GetSliderTrackBounds(SettingsSlider.Bgm), _bgmVolume, _bgmVolume.ToString());
-                DrawSettingsLabel(g, "Music Volume", 1, labelFont, textBrush);
+                DrawSettingsLabel(g, "Preview volume", 1, labelFont, textBrush);
                 DrawSlider(g, SettingsSlider.Preview, GetSliderTrackBounds(SettingsSlider.Preview), _previewVolume, _previewVolume.ToString());
                 DrawSettingsLabel(g, "Effect Volume", 2, labelFont, textBrush);
                 DrawSlider(g, SettingsSlider.Sfx, GetSliderTrackBounds(SettingsSlider.Sfx), _sfxVolume, _sfxVolume.ToString());
@@ -346,8 +372,8 @@ public sealed partial class GameForm
                 DrawDropdown(g, GetSettingsSegmentBounds("hitskin"), GetCurrentHitSoundLabel(), valueFont, textBrush, dimBrush);
                 DrawSettingsLabel(g, "Hit Pitch", 4, labelFont, textBrush);
                 DrawDropdown(g, GetSettingsSegmentBounds("hitpitch"), HitSoundPitchLabels[Math.Clamp(_hitSoundPitch + 1, 0, HitSoundPitchLabels.Length - 1)], valueFont, textBrush, dimBrush);
-                DrawSettingsLabel(g, "Mute Hit Sound", 5, labelFont, textBrush);
-                DrawToggle(g, GetSettingsToggleBounds("hitmute"), _hitSoundMuted);
+                DrawSettingsLabel(g, "Hit sound enabled", 5, labelFont, textBrush);
+                DrawToggle(g, GetSettingsToggleBounds("hitmute"), !_hitSoundMuted);
                 break;
             case 1:
                 DrawSettingsLabel(g, "Note Speed", 0, labelFont, textBrush);
@@ -578,23 +604,7 @@ public sealed partial class GameForm
 
     private void DrawSettingsActionButton(Graphics g, Rectangle bounds, string text, bool primary, Font font, Color accent)
     {
-        using var path = CreateRoundedRect(bounds, MenuS(4f));
-        using var fill = new LinearGradientBrush(bounds,
-            primary ? Color.FromArgb(34, 35, 55, 96) : Color.FromArgb(16, 5, 8, 17),
-            Color.FromArgb(14, 4, 6, 13),
-            LinearGradientMode.Vertical);
-        using var border = new Pen(primary ? Color.FromArgb(205, accent) : Color.FromArgb(70, 190, 204, 235), Math.Max(1f, MenuS(1f)));
-        g.FillPath(fill, path);
-        g.DrawPath(border, path);
-
-        if (primary)
-        {
-            using var glow = new Pen(Color.FromArgb(60, accent), Math.Max(4f, MenuS(4f)));
-            g.DrawPath(glow, path);
-        }
-
-        using var brush = new SolidBrush(Color.FromArgb(228, 236, 252));
-        DrawSpacedString(g, text, font, brush, bounds.Left + bounds.Width / 2f, bounds.Top + MenuS(11f), MenuS(8f), centered: true);
+        DrawConsoleButton(g, bounds, text, font, false, primary);
     }
 
     private void DrawSettingsBackHint(Graphics g, Rectangle bounds, Font font, Brush textBrush)
@@ -606,7 +616,7 @@ public sealed partial class GameForm
         g.FillPath(keyFill, keyPath);
         g.DrawPath(keyPen, keyPath);
         using var keyBrush = new SolidBrush(Color.FromArgb(185, 225, 232, 244));
-        DrawCentered(g, "ESC", font, keyBrush, keyBounds.Left + keyBounds.Width / 2, keyBounds.Top + (int)MenuS(5f));
+        DrawContainedText(g, "ESC", font, keyBrush, RectangleF.Inflate(keyBounds, -3, -1), StringAlignment.Center);
         DrawSpacedString(g, "BACK", font, textBrush, bounds.Left + MenuS(58f), bounds.Top + MenuS(8f), MenuS(8f), centered: false);
     }
 
@@ -692,7 +702,7 @@ public sealed partial class GameForm
             g.FillEllipse(knobBrush, knobBounds);
 
         Rectangle valueBounds = GetSliderValueBounds(slider);
-        using var valueFont = new Font("Segoe UI", Math.Max(8.5f, MenuS(14f)), FontStyle.Regular);
+        using var valueFont = new Font("Segoe UI", Math.Max(8.5f, MenuS(14f) * _textScalePercent / 100f), FontStyle.Regular);
         using var valueBrush = new SolidBrush(Color.FromArgb(212, 218, 235));
         DrawCentered(g, valueText, valueFont, valueBrush, valueBounds.Left + valueBounds.Width / 2, valueBounds.Top + (int)MenuS(6f));
     }
@@ -852,8 +862,10 @@ public sealed partial class GameForm
 
     private void HandleSettingsMouseDown(Point location)
     {
+        BeginSettingsDraft();
         if (GetBackButtonBounds().Contains(location))
         {
+            CancelSettingsDraft();
             _screen = UiScreen.MainMenu;
             Invalidate();
             return;
@@ -894,6 +906,7 @@ public sealed partial class GameForm
 
         if (GetSettingsCancelButtonBounds().Contains(location))
         {
+            CancelSettingsDraft();
             _screen = UiScreen.MainMenu;
             Invalidate();
             return;
@@ -901,8 +914,7 @@ public sealed partial class GameForm
 
         if (GetSettingsApplyButtonBounds().Contains(location))
         {
-            ApplySettingsToRuntime();
-            SaveUserSettings();
+            if (SettingsHaveChanges) CommitSettingsDraft();
             Invalidate();
             return;
         }

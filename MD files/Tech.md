@@ -250,3 +250,11 @@ Release 검증은 실행 중인 `front interface\bin\Release\net9.0-windows\game
 - `Tests/QualityHarness.cs`: `--audio-repeat`, `--soak`, `--export-fixtures`. 자동 검증과 실기기/수동 검증의 구분은 quality-validation.md를 따릅니다.
 
 롤백 시 코드와 함께 새로 편집한 차트의 `.bak` 복구 여부를 검토합니다. 이전 앱도 BMS projection은 읽지만 임의 길이와 정확한 시각을 보장하지 않습니다. 데이터베이스 변경이나 새 NuGet 의존성은 없습니다.
+
+## 인터페이스 공통화
+
+팔레트와 native control 스타일은 InterfaceTheme, 공통 버튼과 문자열 측정은 GameForm에 둔다.
+Song Select는 play-interface.png를 읽지 않고 논리 좌표를 창 안에 맞춰 배치한다.
+렌더링·클릭·접근성이 같은 bounds를 사용하며, 연속 목록의 첫 행 인덱스도 공유한다.
+설정은 UserSettings 초안으로 미리보기와 영속화를 분리하고 Cancel에서 런타임까지 복원한다.
+자세한 변경·데이터 흐름·복구 방법은 [interface-design.md](../front%20interface/docs/interface-design.md)를 참고한다.

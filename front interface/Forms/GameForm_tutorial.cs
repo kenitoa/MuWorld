@@ -4,7 +4,7 @@ public sealed partial class GameForm
 {
     private int _tutorialPromptVersion;
     private bool _tutorialCompleted;
-    private Rectangle GetTutorialBounds() => MenuRect(520f, 26f, 190f, 44f);
+    private Rectangle GetTutorialBounds() => MenuRect(584f, 540f, 512f, 64f);
 
     private void OpenTutorial()
     {
@@ -12,6 +12,10 @@ public sealed partial class GameForm
         try
         {
             using var tutorial = new TutorialForm(_laneKeyBindings[0], _audioOffsetMs);
+            tutorial.FormBorderStyle = FormBorderStyle.None;
+            tutorial.StartPosition = FormStartPosition.Manual;
+            tutorial.Bounds = RectangleToScreen(ClientRectangle);
+            tutorial.ShowInTaskbar = false;
             tutorial.ShowDialog(this);
             _tutorialPromptVersion = 1;
             _tutorialCompleted |= tutorial.Completed;

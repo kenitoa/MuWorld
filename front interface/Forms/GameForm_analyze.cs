@@ -37,60 +37,9 @@ public sealed partial class GameForm
 
     private void DrawAnalyzeBackground(Graphics g)
     {
-        Rectangle layoutRect = new(0, 0, (int)ScaleX(DesignWidth), (int)ScaleY(DesignHeight));
-        using (var bgBrush = new LinearGradientBrush(layoutRect, AnalyzeBg1, AnalyzeBg2, LinearGradientMode.Vertical))
-            g.FillRectangle(bgBrush, layoutRect);
-
-        Color accent = GetAccentColor();
-        Color starColor = UseHighContrast ? AnalyzeTitle : Color.FromArgb(190, 205, 255);
-        using var starBrush = new SolidBrush(Color.FromArgb(130, starColor));
-        for (int i = 0; i < 120; i++)
-        {
-            int hash = i * 1103515245 + 12345;
-            float x = ScaleX(Math.Abs(hash % 10000) / 10000f * DesignWidth);
-            float y = ScaleY(Math.Abs((hash / 97) % 10000) / 10000f * DesignHeight * 0.78f);
-            float size = ScaleY(i % 13 == 0 ? 2.3f : 1.1f);
-            starBrush.Color = Color.FromArgb(i % 13 == 0 ? 118 : 54, starColor);
-            g.FillEllipse(starBrush, x, y, size, size);
-        }
-
-        float horizon = ScaleY(560f);
-        using (var aura = new LinearGradientBrush(
-            new RectangleF(0, horizon - ScaleY(170f), ScaleX(DesignWidth), ScaleY(260f)),
-            Color.FromArgb(0, accent),
-            Color.FromArgb(58, accent),
-            LinearGradientMode.Vertical))
-            g.FillRectangle(aura, 0, horizon - ScaleY(170f), ScaleX(DesignWidth), ScaleY(260f));
-
-        using var mountainBrush = new SolidBrush(UseHighContrast ? AnalyzeBg1 : Color.FromArgb(218, 4, 7, 16));
-        PointF[] left =
-        [
-            new(0, ScaleY(DesignHeight)),
-            new(0, horizon + ScaleY(12f)),
-            new(ScaleX(120f), horizon - ScaleY(46f)),
-            new(ScaleX(280f), horizon + ScaleY(44f)),
-            new(ScaleX(455f), horizon + ScaleY(2f)),
-            new(ScaleX(575f), ScaleY(DesignHeight)),
-        ];
-        PointF[] right =
-        [
-            new(ScaleX(575f), ScaleY(DesignHeight)),
-            new(ScaleX(720f), horizon + ScaleY(8f)),
-            new(ScaleX(900f), horizon - ScaleY(52f)),
-            new(ScaleX(1050f), horizon + ScaleY(34f)),
-            new(ScaleX(DesignWidth), horizon - ScaleY(4f)),
-            new(ScaleX(DesignWidth), ScaleY(DesignHeight)),
-        ];
-        g.FillPolygon(mountainBrush, left);
-        g.FillPolygon(mountainBrush, right);
-
-        using var roadPen = new Pen(Color.FromArgb(34, accent), Math.Max(1f, ScaleY(1f)));
-        for (int i = -5; i <= 5; i++)
-        {
-            float startX = ScaleX(DesignWidth / 2f + i * 8f);
-            float endX = ScaleX(DesignWidth / 2f + i * 94f);
-            g.DrawLine(roadPen, startX, horizon, endX, ScaleY(DesignHeight));
-        }
+        Rectangle bounds = new(0, 0, (int)ScaleX(DesignWidth), (int)ScaleY(DesignHeight));
+        using var fill = new SolidBrush(UseHighContrast ? Color.Black : InterfaceTheme.Background);
+        g.FillRectangle(fill, bounds);
     }
 
     private void DrawHeaderRule(Graphics g, float centerX, float y, float width)
@@ -209,8 +158,7 @@ public sealed partial class GameForm
 
         using var glowBrush = new SolidBrush(Color.FromArgb(82, accent));
         using var textBrush = new SolidBrush(AnalyzeValueColor);
-        DrawCentered(g, grade, gradeFont, glowBrush, (int)(cx + ScaleX(2f)), (int)(cy - ScaleY(62f) + ScaleY(2f)));
-        DrawCentered(g, grade, gradeFont, textBrush, (int)cx, (int)(cy - ScaleY(62f)));
+        DrawContainedText(g, grade, gradeFont, textBrush, new RectangleF(cx - ScaleX(100), cy - ScaleY(86), ScaleX(200), ScaleY(150)), StringAlignment.Center);
     }
 
     private void DrawAnalyzeScoreBlock(Graphics g, Rectangle panel)
@@ -226,20 +174,20 @@ public sealed partial class GameForm
         using var linePen = new Pen(AnalyzeRowBorder, Math.Max(1f, ScaleY(1f)));
 
         DrawSpacedString(g, "SCORE", labelFont, labelBrush, left, top, ScaleX(5f), centered: false);
-        g.DrawString(_analyzeScore.ToString("D7"), scoreFont, valueBrush, left, top + ScaleY(34f));
+        DrawContainedText(g, _analyzeScore.ToString("N0"), scoreFont, valueBrush, new RectangleF(left, top + ScaleY(30), ScaleX(236), ScaleY(78)));
         g.DrawLine(linePen, left, top + ScaleY(110f), panel.Left + ScaleX(728f), top + ScaleY(110f));
 
         DrawSpacedString(g, "ACCURACY", labelFont, labelBrush, left, top + ScaleY(145f), ScaleX(5f), centered: false);
-        g.DrawString($"{_analyzeAccuracy:F2}%", valueFont, valueBrush, left, top + ScaleY(178f));
+        DrawContainedText(g, $"{_analyzeAccuracy:F2}%", valueFont, valueBrush, new RectangleF(left, top + ScaleY(173), ScaleX(236), ScaleY(58)));
         g.DrawLine(linePen, left, top + ScaleY(232f), panel.Left + ScaleX(728f), top + ScaleY(232f));
 
-        g.DrawString("MAX COMBO", labelFont, labelBrush, left, top + ScaleY(262f));
-        g.DrawString(_analyzeMaxCombo.ToString(), comboFont, valueBrush, left, top + ScaleY(298f));
+        DrawContainedText(g, "MAX COMBO", labelFont, labelBrush, new RectangleF(left, top + ScaleY(258), ScaleX(114), ScaleY(30)));
+        DrawContainedText(g, _analyzeMaxCombo.ToString(), comboFont, valueBrush, new RectangleF(left, top + ScaleY(290), ScaleX(114), ScaleY(46)));
 
         float missLeft = left + ScaleX(132f);
         g.DrawLine(linePen, missLeft - ScaleX(18f), top + ScaleY(258f), missLeft - ScaleX(18f), top + ScaleY(342f));
-        g.DrawString("MAX MISS", labelFont, labelBrush, missLeft, top + ScaleY(262f));
-        g.DrawString(_analyzeMissStreak.ToString(), comboFont, valueBrush, missLeft, top + ScaleY(298f));
+        DrawContainedText(g, "MAX MISS", labelFont, labelBrush, new RectangleF(missLeft, top + ScaleY(258), ScaleX(104), ScaleY(30)));
+        DrawContainedText(g, _analyzeMissStreak.ToString(), comboFont, valueBrush, new RectangleF(missLeft, top + ScaleY(290), ScaleX(104), ScaleY(46)));
     }
 
     private void DrawAnalyzeJudgmentPanel(Graphics g, Rectangle panel)
@@ -270,9 +218,9 @@ public sealed partial class GameForm
         foreach ((string label, int value, Color color) in rows)
         {
             using var rowBrush = new SolidBrush(color);
-            g.DrawString(label, rowFont, rowBrush, bounds.Left + ScaleX(24f), y);
-            DrawRightAlignedString(g, value.ToString("D4"), valueFont, valueBrush, bounds.Right - ScaleX(24f), y);
-            g.DrawLine(rowLine, bounds.Left + ScaleX(24f), y + ScaleY(24f), bounds.Right - ScaleX(24f), y + ScaleY(24f));
+            DrawContainedText(g, label, rowFont, rowBrush, new RectangleF(bounds.Left + ScaleX(24), y, ScaleX(106), ScaleY(30)));
+            DrawContainedText(g, value.ToString("N0"), valueFont, valueBrush, new RectangleF(bounds.Right - ScaleX(90), y, ScaleX(66), ScaleY(30)), StringAlignment.Far);
+            g.DrawLine(rowLine, bounds.Left + ScaleX(24f), y + ScaleY(32f), bounds.Right - ScaleX(24f), y + ScaleY(32f));
             y += rowHeight;
         }
     }
@@ -306,7 +254,7 @@ public sealed partial class GameForm
         using var brush = new SolidBrush(AnalyzeValueColor);
         string clearType = ScoreManager.FormatClearType(_analyzeClearType).ToUpperInvariant();
         g.DrawString(clearType, font, brush, bounds.Left + ScaleX(72f), bounds.Top + ScaleY(12f));
-        DrawTrimmedString(g, _analyzeFeedback.FailureCompactLabel, smallFont, brush, new RectangleF(
+        DrawTrimmedString(g, failed && _analyzeFeedback.RecordedMissCount == 0 ? "NOT COMPLETED" : _analyzeFeedback.FailureCompactLabel, smallFont, brush, new RectangleF(
             bounds.Left + ScaleX(72f),
             bounds.Top + ScaleY(34f),
             bounds.Width - ScaleX(88f),
@@ -335,7 +283,9 @@ public sealed partial class GameForm
     {
         using var font = new Font("Segoe UI", Math.Max(7f, ScaleTextY(10.5f)), FontStyle.Bold);
         using var brush = new SolidBrush(GetAnalyzeLearningSummaryColor());
-        string resultMessage = $"{_analyzeFeedback.TimingLabel}  |  {_analyzeFeedback.NextGoal}";
+        string resultMessage = _analyzeFeedback.TimingLabel == "NO TIMING DATA"
+            ? "No input timing recorded."
+            : $"{_analyzeFeedback.TimingLabel}  |  {_analyzeFeedback.NextGoal}";
         string message = string.IsNullOrWhiteSpace(_analyzeReplayStatus)
             ? resultMessage
             : $"{_analyzeReplayStatus}  |  {resultMessage}";
@@ -394,38 +344,21 @@ public sealed partial class GameForm
         for (int i = 0; i < labels.Length; i++)
         {
             bool enabled = i != 2 || CanPlayNextSong();
-            DrawAnalyzeActionButton(g, GetAnalyzeActionButtonBounds(i), labels[i], enabled && _hoverAnalyzeAction == i, i == 2, enabled);
+            DrawAnalyzeActionButton(g, GetAnalyzeActionButtonBounds(i), labels[i], enabled && _hoverAnalyzeAction == i, i == (_analyzeClearType == ClearType.Failed ? 0 : 1), enabled);
         }
     }
 
     private void DrawAnalyzeActionButton(Graphics g, Rectangle bounds, string label, bool hovered, bool primary, bool enabled)
     {
-        Color accent = primary ? GetAccentColor() : Color.FromArgb(112, 154, 234);
-        Rectangle drawBounds = bounds;
-        if (hovered && !_reducedMotionEnabled)
-            drawBounds.Offset(0, -(int)ScaleY(2f));
-
-        using var path = CreateRoundedRect(drawBounds, ScaleY(6f));
-        using var fill = new LinearGradientBrush(
-            drawBounds,
-            Color.FromArgb(enabled ? primary ? 72 : 36 : 12, accent),
-            Color.FromArgb(enabled ? primary ? 24 : 16 : 8, accent),
-            LinearGradientMode.Vertical);
-        using var border = new Pen(Color.FromArgb(enabled ? hovered || primary ? 220 : 140 : 54, accent), Math.Max(1f, primary ? ScaleY(1.7f) : ScaleY(1.1f)));
-        using var textBrush = new SolidBrush(enabled ? AnalyzeValueColor : Color.FromArgb(104, AnalyzeValueColor));
-        g.FillPath(fill, path);
-        g.DrawPath(border, path);
-
-        using var iconFont = new Font("Segoe UI", Math.Max(12f, ScaleTextY(18f)), FontStyle.Regular);
-        using var labelFont = new Font("Segoe UI", Math.Max(8f, ScaleTextY(12f)), FontStyle.Regular);
-        string icon = label switch
+        using var font = new Font("Segoe UI", Math.Max(10f, ScaleTextY(13f)));
+        if (enabled)
+            DrawConsoleButton(g, bounds, label, font, hovered, primary);
+        else
         {
-            "RETRY" => "R",
-            "SONG SELECT" => "=",
-            _ => ">"
-        };
-        DrawCentered(g, icon, iconFont, textBrush, bounds.Left + (int)ScaleX(46f), bounds.Top + (int)ScaleY(22f));
-        DrawCentered(g, label, labelFont, textBrush, bounds.Left + bounds.Width / 2 + (int)ScaleX(18f), bounds.Top + (int)ScaleY(27f));
+            using var text = new SolidBrush(InterfaceTheme.Muted);
+            using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            g.DrawString("No next track", font, text, bounds, format);
+        }
     }
 
     private Rectangle GetAnalyzeActionButtonBounds(int index)
@@ -556,7 +489,7 @@ public sealed partial class GameForm
         using var brush = new SolidBrush(AnalyzeValueColor);
         g.FillPath(fill, path);
         g.DrawPath(border, path);
-        DrawSpacedString(g, text, font, brush, bounds.Left + bounds.Width / 2f, bounds.Top + ScaleY(7f), ScaleX(4f), centered: true);
+        DrawContainedText(g, text, font, brush, RectangleF.Inflate(bounds, -4, -2), StringAlignment.Center);
     }
 
     private void DrawAnalyzeNewRecordBadge(Graphics g, float x, float y)

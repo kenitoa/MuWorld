@@ -15,9 +15,9 @@ public sealed partial class GameForm
     private int _chartEditorDiagnosticIndex;
 
     private string[] GetChartEditorActions() => ["BACK", "SAVE", "UNDO", $"TYPE {_chartEditorInsertType}",
-        "BPM -", "BPM +", "TIME -", "TIME +", "PREVIEW", "REDO", $"SNAP {_chartEditorSubdivision}",
+        "BPM -", "BPM +", "TIME -", "TIME +", "PREVIEW", "REDO", _chartEditorSubdivision == 0 ? "SNAP OFF" : $"SNAP 1/{_chartEditorSubdivision} BEAT",
         "SELECT ALL", "COPY", "PASTE", "MIRROR", "QUANTIZE", "RANGE IN", "RANGE OUT", "WARNING",
-        "INSERT", "LENGTH -", "LENGTH +"];
+        "INSERT", "LENGTH -", "LENGTH +", "EDIT VALUES"];
 
     private ChartEditorSnapshot CaptureChartEditor() => new(_chartEditorNotes.ToList(), _chartEditorBpm,
         _chartEditorSelectedIndex, _chartEditorCursorTime);
@@ -88,9 +88,9 @@ public sealed partial class GameForm
         using (var bg = new LinearGradientBrush(layoutRect, UseHighContrast ? Color.Black : Color.FromArgb(9, 13, 24), UseHighContrast ? Color.Black : Color.FromArgb(19, 28, 46), LinearGradientMode.Vertical))
             g.FillRectangle(bg, layoutRect);
 
-        using var titleFont = new Font("Segoe UI", Math.Max(11f, ScaleY(26f) * _textScalePercent / 100f), FontStyle.Bold);
-        using var labelFont = new Font("Segoe UI", Math.Max(7f, ScaleY(11f)), FontStyle.Bold);
-        using var smallFont = new Font("Segoe UI", Math.Max(6f, ScaleY(9.5f)), FontStyle.Bold);
+        using var titleFont = new Font("Segoe UI", Math.Max(11f, ScaleY(26f) * _textScalePercent / 100f), FontStyle.Regular);
+        using var labelFont = new Font("Segoe UI", Math.Max(7f, ScaleY(11f)), FontStyle.Regular);
+        using var smallFont = new Font("Segoe UI", Math.Max(6f, ScaleTextY(9.5f)), FontStyle.Regular);
         using var titleBrush = new SolidBrush(Color.FromArgb(238, 246, 255));
         using var mutedBrush = new SolidBrush(Color.FromArgb(175, 190, 218));
 
@@ -98,7 +98,8 @@ public sealed partial class GameForm
         string header = $"{_chartEditorSongTitle}  |  {LaneCount}K  |  {GetDifficultyLabel(_songSelectDifficultyIndex)}  |  BPM {_chartEditorBpm:F0}";
         DrawCentered(g, header, labelFont, mutedBrush, (int)ScaleX(DesignWidth / 2f), (int)ScaleY(66f));
 
-        using var toolbarFont = new Font("Segoe UI", Math.Max(7f, ScaleY(8.5f)), FontStyle.Bold);
+        using var toolbarFont = new Font("Segoe UI", Math.Max(7f, ScaleTextY(9.5f)), FontStyle.Regular);
+        g.DrawString("TRANSFORM / PROPERTIES", smallFont, mutedBrush, ScaleX(894), ScaleY(194));
         DrawChartEditorToolbar(g, toolbarFont);
         DrawChartEditorGrid(g, labelFont, smallFont);
         DrawChartEditorStats(g, smallFont);
@@ -113,28 +114,29 @@ public sealed partial class GameForm
 
     private Rectangle GetChartEditorGridBounds()
     {
-        return Rectangle.Round(new RectangleF(ScaleX(70f), ScaleY(184f), ScaleX(1012f), ScaleY(350f)));
+        return Rectangle.Round(new RectangleF(ScaleX(70f), ScaleY(184f), ScaleX(800f), ScaleY(350f)));
     }
 
     private Rectangle GetChartEditorActionBounds(int index)
     {
-        return Rectangle.Round(new RectangleF(ScaleX(62f + index % 11 * 94f),
-            ScaleY(94f + index / 11 * 40f), ScaleX(90f), ScaleY(34f)));
+        if (index == 22) return Rectangle.Round(new RectangleF(ScaleX(894), ScaleY(140), ScaleX(193), ScaleY(38)));
+        int[] document = [0, 1, 2, 9, 8];
+        int position = Array.IndexOf(document, index);
+        if (position >= 0)
+            return Rectangle.Round(new RectangleF(ScaleX(70 + position * 142), ScaleY(94), ScaleX(132), ScaleY(38)));
+        int[] tools = [3, 10, 19];
+        position = Array.IndexOf(tools, index);
+        if (position >= 0)
+            return Rectangle.Round(new RectangleF(ScaleX(70 + position * 190), ScaleY(140), ScaleX(180), ScaleY(34)));
+        int[] properties = [4, 5, 6, 7, 20, 21, 11, 18, 12, 13, 14, 15, 16, 17];
+        position = Array.IndexOf(properties, index);
+        return Rectangle.Round(new RectangleF(ScaleX(894 + position % 2 * 99),
+            ScaleY(222 + position / 2 * 44), ScaleX(94), ScaleY(36)));
     }
 
     private void DrawChartEditorButton(Graphics g, Rectangle bounds, string label, bool hover, Font font)
     {
-        Color accent = UseHighContrast ? Color.White : GetAccentColor();
-        using var path = CreateRoundedRect(bounds, ScaleY(8f));
-        using var fill = new LinearGradientBrush(bounds,
-            hover ? Color.FromArgb(170, accent) : Color.FromArgb(105, accent),
-            Color.FromArgb(52, accent),
-            LinearGradientMode.Vertical);
-        using var border = new Pen(hover ? Color.White : Color.FromArgb(120, accent), Math.Max(1f, ScaleY(1.3f)));
-        using var brush = new SolidBrush(Color.White);
-        g.FillPath(fill, path);
-        g.DrawPath(border, path);
-        DrawCentered(g, label, font, brush, bounds.Left + bounds.Width / 2, bounds.Top + (int)ScaleY(8f));
+        DrawConsoleButton(g, bounds, label, font, hover, label == "SAVE");
     }
 
     private void DrawChartEditorGrid(Graphics g, Font labelFont, Font smallFont)
@@ -239,6 +241,11 @@ public sealed partial class GameForm
             g.FillRectangle(brush, panel.Left + i * panel.Width / (float)density.Length,
                 ScaleY(590f) - height, Math.Max(1f, panel.Width / (float)density.Length - 2f), height);
         }
+        Rectangle overview = GetEditorOverviewBounds();
+        float start = Math.Clamp(_chartEditorCursorTime - 16f * 0.35f, 0, Math.Max(0, _chartEditorSongDuration - 16));
+        using var viewportPen = new Pen(InterfaceTheme.Accent, Math.Max(1, ScaleY(2)));
+        g.DrawRectangle(viewportPen, overview.Left + start / Math.Max(1, _chartEditorSongDuration) * overview.Width,
+            overview.Top, Math.Min(1, 16f / Math.Max(1, _chartEditorSongDuration)) * overview.Width, overview.Height);
         string stats = $"Lv.{result.Difficulty.Level}  {_chartEditorNotes.Count} notes  {result.Difficulty.NotesPerSecond:F1} n/s  Chord {result.Difficulty.ChordRatio:P0}  Jack {result.Difficulty.JackRatio:P0}  Long {result.Difficulty.LongRatio:P0}  Slide {result.Difficulty.SlideRatio:P0}";
         g.DrawString(stats, font, brush, panel.Left + ScaleX(18f), panel.Top + ScaleY(12f));
         using var statusFormat = new StringFormat { Trimming = StringTrimming.EllipsisCharacter };
@@ -264,7 +271,7 @@ public sealed partial class GameForm
 
     private bool IsChartEditorInteractive(Point location)
     {
-        if (GetChartEditorGridBounds().Contains(location))
+        if (GetChartEditorGridBounds().Contains(location) || GetEditorOverviewBounds().Contains(location))
             return true;
 
         for (int i = 0; i < GetChartEditorActions().Length; i++)
@@ -274,8 +281,18 @@ public sealed partial class GameForm
         return false;
     }
 
+    private Rectangle GetEditorOverviewBounds() =>
+        Rectangle.Round(new RectangleF(ScaleX(70), ScaleY(550), ScaleX(1012), ScaleY(42)));
+
     private void HandleChartEditorMouseDown(Point location, MouseButtons button)
     {
+        Rectangle overview = GetEditorOverviewBounds();
+        if (overview.Contains(location))
+        {
+            _chartEditorCursorTime = Math.Clamp((location.X - overview.Left) / (float)overview.Width, 0, 1) * _chartEditorSongDuration;
+            Invalidate();
+            return;
+        }
         for (int i = 0; i < GetChartEditorActions().Length; i++)
         {
             if (GetChartEditorActionBounds(i).Contains(location))
@@ -313,6 +330,7 @@ public sealed partial class GameForm
 
     private void HandleChartEditorAction(int action)
     {
+        if (action == 22) { OpenChartEditorProperties(); return; }
         switch (action)
         {
             case 0:

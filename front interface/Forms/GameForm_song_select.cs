@@ -6,10 +6,23 @@ namespace RhythmGame;
 public sealed partial class GameForm
 {
     private const int SongRowsPerPage = 6;
-    private const float SongSelectPhotoWidth = 1672f;
-    private const float SongSelectPhotoHeight = 941f;
-    private static readonly string SongSelectPhotoRelativePath = Path.Combine("Assets", "play-interface.png");
-    private Image? _songSelectPhoto;
+    private int _songListFirstIndex;
+    private int GetSongFirstVisibleIndex()
+    {
+        int maximum = Math.Max(0, GetFilteredSongs().Length - SongRowsPerPage);
+        _songListFirstIndex = Math.Clamp(_songListFirstIndex, 0, maximum);
+        if (_songSelectSelectedIndex < _songListFirstIndex) _songListFirstIndex = _songSelectSelectedIndex;
+        if (_songSelectSelectedIndex >= _songListFirstIndex + SongRowsPerPage)
+            _songListFirstIndex = _songSelectSelectedIndex - SongRowsPerPage + 1;
+        return _songListFirstIndex = Math.Clamp(_songListFirstIndex, 0, maximum);
+    }
+
+    private Rectangle GetLibraryToolBounds(int index) => GetSongSelectLayoutLogicalRect(54 + index * 154, 171, 144, 42);
+    private Rectangle GetLibraryLaneBounds(int index) => GetSongSelectLayoutLogicalRect(752 + index * 125, 190, 112, 42);
+    private Rectangle GetLibraryClearFiltersBounds() => GetSongSelectLayoutLogicalRect(1460, 190, 123, 42);
+
+    private const float SongSelectLayoutWidth = 1672f;
+    private const float SongSelectLayoutHeight = 941f;
     private FileSystemWatcher? _songFolderWatcher;
     private System.Threading.Timer? _songGenerationDebounceTimer;
 
@@ -236,89 +249,62 @@ public sealed partial class GameForm
         SongEntry? selectedSong = GetSelectedSong();
         EnsureSongPreview(selectedSong);
 
-        if (!DrawSongSelectPhoto(g))
+        DrawSongSelectBackground(g);
+        using (var heading = new Font("Segoe UI", Math.Max(18f, ScaleTextY(27f)), FontStyle.Regular))
+        using (var label = new Font("Segoe UI", Math.Max(10f, ScaleTextY(12f))))
+        using (var text = new SolidBrush(UseHighContrast ? Color.White : InterfaceTheme.Text))
+        using (var muted = new SolidBrush(UseHighContrast ? Color.White : InterfaceTheme.Muted))
         {
-            DrawSongSelectBackground(g);
-            using var font = new Font("Segoe UI", Math.Max(14f, ScaleTextY(24f)), FontStyle.Regular);
-            using var brush = new SolidBrush(PrimaryTextColor);
-            DrawCentered(g, "Song Select image asset is missing.", font, brush, (int)ScaleX(DesignWidth / 2f), (int)ScaleY(DesignHeight / 2f));
-            return;
+            DrawSongLayoutText(g, "MUWORLD / LIBRARY", label, muted, 54, 42, 900, 30);
+            DrawSongLayoutText(g, "Song select", heading, text, 54, 82, 1000, 70);
+            DrawSongLayoutText(g, BuildActiveFiltersDescription(), label, muted, 752, 140, 831, 32);
+            DrawSongLayoutText(g, "ESC  Back", label, text, 37, 868, 200, 32);
         }
 
         DrawSongSelectLiveData(g, selectedSong);
-        DrawSongSelectPhotoFocus(g);
+        DrawSongSelectLayoutFocus(g);
+        using var modeFont = new Font("Segoe UI", Math.Max(9f, ScaleTextY(11f)));
+        for (int mode = 0; mode < LaneModes.Length; mode++)
+            DrawConsoleButton(g, GetLibraryLaneBounds(mode), $"{LaneModes[mode].Count}K", modeFont,
+                _hoverSongPlayIndex == 60 + mode, _laneModeIndex == mode);
+        DrawConsoleButton(g, GetLibraryClearFiltersBounds(), "Clear", modeFont, _hoverSongPlayIndex == 64);
+        string[] tools = ["Rescan", "Details", "Replay", "Editor"];
+        for (int i = 0; i < tools.Length; i++)
+            DrawConsoleButton(g, GetLibraryToolBounds(i), tools[i], modeFont, _hoverSongPlayIndex == 65 + i);
     }
 
-    private bool DrawSongSelectPhoto(Graphics g)
+    private RectangleF GetSongSelectLayoutClientBounds()
     {
-        Image? photo = GetSongSelectPhoto();
-        if (photo is null)
-            return false;
-
-        g.DrawImage(photo, GetSongSelectPhotoLogicalBounds());
-        return true;
-    }
-
-    private Image? GetSongSelectPhoto()
-    {
-        if (_songSelectPhoto is not null)
-            return _songSelectPhoto;
-
-        string outputPath = Path.Combine(AppContext.BaseDirectory, SongSelectPhotoRelativePath);
-        string sourcePath = Path.Combine(Environment.CurrentDirectory, SongSelectPhotoRelativePath);
-        string path = File.Exists(outputPath) ? outputPath : sourcePath;
-        if (!File.Exists(path))
-            return null;
-
-        try
-        {
-            _songSelectPhoto = Image.FromFile(path);
-            return _songSelectPhoto;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private RectangleF GetSongSelectPhotoClientBounds()
-    {
-        float scale = Math.Max(ClientSize.Width / SongSelectPhotoWidth, ClientSize.Height / SongSelectPhotoHeight);
-        float width = SongSelectPhotoWidth * scale;
-        float height = SongSelectPhotoHeight * scale;
+        float scale = Math.Min(ClientSize.Width / SongSelectLayoutWidth, ClientSize.Height / SongSelectLayoutHeight);
+        float width = SongSelectLayoutWidth * scale;
+        float height = SongSelectLayoutHeight * scale;
         return new RectangleF((ClientSize.Width - width) / 2f, (ClientSize.Height - height) / 2f, width, height);
     }
 
-    private RectangleF GetSongSelectPhotoLogicalBounds()
+    private Rectangle GetSongSelectLayoutLogicalRect(float x, float y, float width, float height)
     {
-        RectangleF client = GetSongSelectPhotoClientBounds();
-        return new RectangleF(client.Left - _layoutOffsetX, client.Top - _layoutOffsetY, client.Width, client.Height);
-    }
-
-    private Rectangle GetSongSelectPhotoLogicalRect(float x, float y, float width, float height)
-    {
-        RectangleF client = GetSongSelectPhotoClientBounds();
+        RectangleF client = GetSongSelectLayoutClientBounds();
         return Rectangle.Round(new RectangleF(
-            client.Left - _layoutOffsetX + x / SongSelectPhotoWidth * client.Width,
-            client.Top - _layoutOffsetY + y / SongSelectPhotoHeight * client.Height,
-            width / SongSelectPhotoWidth * client.Width,
-            height / SongSelectPhotoHeight * client.Height));
+            client.Left - _layoutOffsetX + x / SongSelectLayoutWidth * client.Width,
+            client.Top - _layoutOffsetY + y / SongSelectLayoutHeight * client.Height,
+            width / SongSelectLayoutWidth * client.Width,
+            height / SongSelectLayoutHeight * client.Height));
     }
 
-    private PointF? ToSongSelectPhotoPoint(Point logicalPoint)
+    private PointF? ToSongSelectLayoutPoint(Point logicalPoint)
     {
-        RectangleF client = GetSongSelectPhotoClientBounds();
+        RectangleF client = GetSongSelectLayoutClientBounds();
         float clientX = logicalPoint.X + _layoutOffsetX;
         float clientY = logicalPoint.Y + _layoutOffsetY;
         if (clientX < client.Left || clientX > client.Right || clientY < client.Top || clientY > client.Bottom)
             return null;
 
         return new PointF(
-            (clientX - client.Left) / client.Width * SongSelectPhotoWidth,
-            (clientY - client.Top) / client.Height * SongSelectPhotoHeight);
+            (clientX - client.Left) / client.Width * SongSelectLayoutWidth,
+            (clientY - client.Top) / client.Height * SongSelectLayoutHeight);
     }
 
-    private void DrawSongSelectPhotoFocus(Graphics g)
+    private void DrawSongSelectLayoutFocus(Graphics g)
     {
         using var glowPen = new Pen(Color.FromArgb(160, 124, 169, 255), Math.Max(1.4f, ScaleY(2.2f)));
         glowPen.LineJoin = LineJoin.Round;
@@ -359,35 +345,35 @@ public sealed partial class GameForm
 
     private void DrawSongSelectCleanPanels(Graphics g)
     {
-        Color panel = Color.FromArgb(255, 4, 7, 16);
-        Color panelSoft = Color.FromArgb(248, 6, 10, 22);
-        Color border = Color.FromArgb(104, 90, 116, 170);
+        Color panel = UseHighContrast ? Color.Black : InterfaceTheme.Surface;
+        Color panelSoft = panel;
+        Color border = UseHighContrast ? Color.White : InterfaceTheme.Border;
 
-        FillSongPhotoRect(g, 50f, 226f, 622f, 101f, 10f, panelSoft, border);
-        FillSongPhotoRect(g, 50f, 331f, 622f, 508f, 8f, panel, border);
-        FillSongPhotoRect(g, 752f, 251f, 323f, 303f, 8f, panel, border);
-        FillSongPhotoRect(g, 1110f, 252f, 482f, 318f, 0f, Color.FromArgb(252, 5, 8, 17), Color.Transparent);
-        FillSongPhotoRect(g, 752f, 586f, 831f, 91f, 0f, Color.FromArgb(246, 5, 8, 17), Color.Transparent);
-        FillSongPhotoRect(g, 752f, 714f, 831f, 83f, 8f, Color.FromArgb(252, 7, 12, 27), Color.FromArgb(210, 124, 169, 255));
-        FillSongPhotoRect(g, 1450f, 860f, 190f, 48f, 6f, Color.FromArgb(242, 5, 8, 17), Color.Transparent);
+        FillSongLayoutRect(g, 50f, 226f, 622f, 101f, 10f, panelSoft, border);
+        FillSongLayoutRect(g, 50f, 331f, 622f, 508f, 8f, panel, border);
+        FillSongLayoutRect(g, 728f, 236f, 884f, 608f, 12f, panel, border);
+        FillSongLayoutRect(g, 1110f, 252f, 482f, 318f, 0f, panel, Color.Transparent);
+        FillSongLayoutRect(g, 752f, 586f, 831f, 91f, 0f, panel, Color.Transparent);
+        FillSongLayoutRect(g, 752f, 714f, 831f, 83f, 8f, Color.FromArgb(252, 7, 12, 27), Color.FromArgb(210, 124, 169, 255));
+        FillSongLayoutRect(g, 1450f, 860f, 190f, 48f, 6f, Color.FromArgb(242, 5, 8, 17), Color.Transparent);
     }
 
     private void DrawSongSearchOverlay(Graphics g, Font font, Brush subBrush, Brush activeBrush)
     {
-        FillSongPhotoRect(g, 56f, 229f, 612f, 47f, 10f, Color.FromArgb(255, 6, 9, 18), Color.FromArgb(118, 96, 110, 138));
+        FillSongLayoutRect(g, 56f, 229f, 612f, 47f, 10f, Color.FromArgb(255, 6, 9, 18), Color.FromArgb(118, 96, 110, 138));
         string text = string.IsNullOrWhiteSpace(_songSearchQuery) ? "Search songs..." : _songSearchQuery;
-        DrawSongPhotoText(g, text, font, string.IsNullOrWhiteSpace(_songSearchQuery) ? subBrush : activeBrush, 117f, 241f, 500f, 30f);
+        DrawSongLayoutText(g, text, font, string.IsNullOrWhiteSpace(_songSearchQuery) ? subBrush : activeBrush, 117f, 241f, 500f, 30f);
 
-        FillSongPhotoRect(g, 75f, 293f, 245f, 26f, 4f, Color.FromArgb(255, 5, 8, 17), Color.Transparent);
-        DrawSongPhotoText(g, $"SORT  {SongSortLabels[_songSortModeIndex]}", font, subBrush, 76f, 297f, 205f, 22f);
-        FillSongPhotoRect(g, 380f, 293f, 250f, 26f, 4f, Color.FromArgb(255, 5, 8, 17), Color.Transparent);
-        DrawSongPhotoText(g, "FILTERS - F2", font, subBrush, 404f, 297f, 210f, 22f);
+        FillSongLayoutRect(g, 75f, 293f, 245f, 26f, 4f, Color.FromArgb(255, 5, 8, 17), Color.Transparent);
+        DrawSongLayoutText(g, $"SORT  {SongSortLabels[_songSortModeIndex]}", font, subBrush, 76f, 287f, 230f, 36f);
+        FillSongLayoutRect(g, 380f, 293f, 250f, 26f, 4f, Color.FromArgb(255, 5, 8, 17), Color.Transparent);
+        DrawSongLayoutText(g, BuildFilterSummary(), font, subBrush, 392f, 287f, 250f, 36f);
     }
 
     private void DrawSongListOverlay(Graphics g, Font titleFont, Font artistFont, Brush titleBrush, Brush subBrush)
     {
         SongEntry[] songs = GetFilteredSongs();
-        int first = _songSelectPageIndex * SongRowsPerPage;
+        int first = GetSongFirstVisibleIndex();
         Rectangle listBounds = GetSongListBounds(GetSongSelectPanelBounds());
 
         for (int row = 0; row < SongRowsPerPage; row++)
@@ -400,7 +386,7 @@ public sealed partial class GameForm
 
             if (selected || hovered)
             {
-                using var path = CreateRoundedRect(Rectangle.Inflate(rowBounds, -6, -6), ScaleY(7f));
+                using var path = CreateRoundedRect(Rectangle.Inflate(rowBounds, -6, -2), ScaleY(7f));
                 using var fill = new SolidBrush(selected ? Color.FromArgb(138, 40, 52, 108) : Color.FromArgb(78, 32, 42, 76));
                 using var pen = new Pen(selected ? Color.FromArgb(190, 124, 169, 255) : Color.FromArgb(100, 108, 136, 192), Math.Max(1f, ScaleY(1.2f)));
                 g.FillPath(fill, path);
@@ -413,12 +399,12 @@ public sealed partial class GameForm
             Rectangle art = Rectangle.Round(new RectangleF(
                 rowBounds.Left + rowBounds.Width * 0.04f,
                 rowBounds.Top + rowBounds.Height * 0.14f,
-                rowBounds.Width * 0.12f,
+                rowBounds.Height * 0.72f,
                 rowBounds.Height * 0.72f));
             DrawSongArtwork(g, art, song);
             DrawSongText(g, song.Title, titleFont, titleBrush,
                 rowBounds.Left + rowBounds.Width * 0.20f,
-                rowBounds.Top + rowBounds.Height * 0.18f,
+                rowBounds.Top + rowBounds.Height * 0.06f,
                 rowBounds.Width * 0.53f,
                 rowBounds.Height * 0.36f);
             DrawSongText(g, song.Artist, artistFont, subBrush,
@@ -435,20 +421,21 @@ public sealed partial class GameForm
                 rowBounds.Height * 0.34f);
         }
 
-        DrawSongPagerControls(g, songs.Length, first, titleFont, subBrush);
+        using var pagerFont = new Font("Segoe UI", Math.Max(8f, ScaleTextY(10)));
+        DrawSongPagerControls(g, songs.Length, first, pagerFont, subBrush);
     }
 
     private void DrawSongPagerControls(Graphics g, int total, int first, Font font, Brush brush)
     {
         int pageCount = GetSongPageCount();
         int page = Math.Clamp(_songSelectPageIndex + 1, 1, pageCount);
-        DrawSongPageButton(g, GetSongPrevButtonBounds(GetSongSelectPanelBounds()), "PREV", _hoverSongPlayIndex == 20, page > 1, font, brush);
-        DrawSongPageButton(g, GetSongNextButtonBounds(GetSongSelectPanelBounds()), "NEXT", _hoverSongPlayIndex == 21, page < pageCount, font, brush);
+        DrawSongPageButton(g, GetSongPrevButtonBounds(GetSongSelectPanelBounds()), "↑", _hoverSongPlayIndex == 20, _songSelectSelectedIndex > 0, font, brush);
+        DrawSongPageButton(g, GetSongNextButtonBounds(GetSongSelectPanelBounds()), "↓", _hoverSongPlayIndex == 21, _songSelectSelectedIndex < total - 1, font, brush);
 
         Rectangle label = GetSongPageLabelBounds();
         FillSongLogicalRect(g, label, ScaleY(4f), Color.FromArgb(255, 4, 7, 16), Color.FromArgb(80, 82, 102, 148));
-        string text = total == 0 ? "PAGE 0/0" : $"PAGE {page}/{pageCount}";
-        DrawSongText(g, text, font, brush, label.Left, label.Top + label.Height * 0.10f, label.Width, label.Height * 0.76f, StringAlignment.Center);
+        string text = total == 0 ? "0 SONGS" : $"{first + 1}–{Math.Min(total, first + SongRowsPerPage)} / {total}";
+        DrawSongText(g, text, font, brush, label.Left, label.Top, label.Width, label.Height * 0.76f, StringAlignment.Center);
     }
 
     private void DrawSongPageButton(Graphics g, Rectangle bounds, string label, bool hovered, bool enabled, Font font, Brush textBrush)
@@ -462,39 +449,42 @@ public sealed partial class GameForm
         FillSongLogicalRect(g, bounds, ScaleY(4f), fillColor, borderColor);
 
         using var disabledBrush = new SolidBrush(Color.FromArgb(92, 126, 134, 154));
-        DrawSongText(g, label, font, enabled ? textBrush : disabledBrush, bounds.Left, bounds.Top + bounds.Height * 0.10f, bounds.Width, bounds.Height * 0.76f, StringAlignment.Center);
+        DrawSongText(g, label, font, enabled ? textBrush : disabledBrush, bounds.Left, bounds.Top, bounds.Width, bounds.Height * 0.76f, StringAlignment.Center);
     }
 
     private void DrawSongDetailOverlay(Graphics g, SongEntry? song, Font titleFont, Font infoFont, Font smallFont, Brush titleBrush, Brush subBrush, Brush accentBrush)
     {
-        DrawSongArtwork(g, GetSongSelectPhotoLogicalRect(752f, 251f, 323f, 303f), song);
+        DrawSongArtwork(g, GetSongSelectLayoutLogicalRect(752f, 251f, 303f, 303f), song);
         if (song is null)
         {
-            DrawSongPhotoText(g, "No Songs Found", titleFont, titleBrush, 1124f, 280f, 430f, 42f);
-            DrawSongPhotoText(g, "Adjust search or rescan the Songs folder.", infoFont, subBrush, 1124f, 336f, 430f, 28f);
+            DrawSongLayoutText(g, "No Songs Found", titleFont, titleBrush, 1124f, 280f, 430f, 42f);
+            DrawSongLayoutText(g, "Adjust search or rescan the Songs folder.", infoFont, subBrush, 1124f, 336f, 430f, 28f);
             return;
         }
 
-        DrawSongPhotoText(g, song.Title, titleFont, titleBrush, 1124f, 280f, 430f, 42f);
-        DrawSongPhotoText(g, song.Artist, infoFont, accentBrush, 1124f, 337f, 430f, 28f);
-        DrawSongPhotoText(g, "BPM", smallFont, subBrush, 1165f, 411f, 90f, 24f);
-        DrawSongPhotoText(g, song.Bpm > 0f ? $"{song.Bpm:F0}" : "--", infoFont, titleBrush, 1294f, 410f, 120f, 25f);
-        DrawSongPhotoText(g, "LENGTH", smallFont, subBrush, 1165f, 464f, 100f, 24f);
-        DrawSongPhotoText(g, FormatSongDuration(song.DurationSeconds), infoFont, titleBrush, 1294f, 463f, 120f, 25f);
+        DrawSongLayoutText(g, song.Title, titleFont, titleBrush, 1124f, 280f, 430f, 42f);
+        DrawSongLayoutText(g, song.Artist, infoFont, accentBrush, 1124f, 337f, 430f, 28f);
+        DrawSongLayoutText(g, "BPM", smallFont, subBrush, 1165f, 411f, 90f, 24f);
+        DrawSongLayoutText(g, song.Bpm > 0f ? $"{song.Bpm:F0}" : "--", infoFont, titleBrush, 1294f, 410f, 120f, 25f);
+        DrawSongLayoutText(g, "LENGTH", smallFont, subBrush, 1165f, 464f, 128f, 32f);
+        DrawSongLayoutText(g, FormatSongDuration(song.DurationSeconds), infoFont, titleBrush, 1294f, 463f, 120f, 25f);
 
         string level = _songPreviewDifficulty is null ? "Lv.--" : $"Lv.{_songPreviewDifficulty.Level:00}";
         string notes = $"{_songPreviewNotes.Count} notes";
-        DrawSongPhotoText(g, $"{LaneCount}K  {GetDifficultyLabel(_songSelectDifficultyIndex)}  {level}", smallFont, subBrush, 1124f, 516f, 300f, 24f);
-        DrawSongPhotoText(g, notes, smallFont, subBrush, 1420f, 516f, 150f, 24f, StringAlignment.Far);
+        DrawSongLayoutText(g, $"{LaneCount}K  {GetDifficultyLabel(_songSelectDifficultyIndex)}  {level}", smallFont, subBrush, 1124f, 516f, 300f, 24f);
+        DrawSongLayoutText(g, notes, smallFont, subBrush, 1420f, 516f, 150f, 24f, StringAlignment.Far);
+        DrawSongLayoutText(g, $"PERSONAL BEST (ALL CHARTS)  {song.HighestScore:N0}  {song.BestGrade}", smallFont, subBrush, 752, 678, 800, 32);
+        if (LibraryStatus.TryGetValue(song.SongId, out string? status) && status.Length > 0)
+            DrawSongLayoutText(g, status, smallFont, subBrush, 752, 816, 831, 28);
     }
 
     private void DrawSongDifficultyOverlay(Graphics g, Font font, Brush textBrush, Brush mutedBrush)
     {
-        DrawSongPhotoText(g, "DIFFICULTY", font, mutedBrush, 752f, 594f, 230f, 20f);
-        string[] labels = ["EASY", "NORMAL", "HARD", "EXPERT N/A"];
+        DrawSongLayoutText(g, "DIFFICULTY", font, mutedBrush, 752f, 577f, 230f, 38f);
+        string[] labels = ["EASY", "NORMAL", "HARD", "NO CHART"];
         for (int i = 0; i < labels.Length; i++)
         {
-            Rectangle rect = GetDifficultyPhotoButtonBounds(i);
+            Rectangle rect = GetDifficultyChoiceButtonBounds(i);
             bool available = i < 3;
             bool selected = available && _songSelectDifficultyIndex == i;
             bool hovered = available && _hoverSongPlayIndex == 10 + i;
@@ -511,7 +501,9 @@ public sealed partial class GameForm
             using var pen = new Pen(borderColor, Math.Max(1f, ScaleY(1.1f)));
             g.FillPath(fill, path);
             g.DrawPath(pen, path);
-            DrawCentered(g, labels[i], font, available ? textBrush : mutedBrush, rect.Left + rect.Width / 2, rect.Top + (int)(rect.Height * 0.36f));
+            using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center,
+                Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
+            g.DrawString(labels[i], font, available ? textBrush : mutedBrush, rect, format);
         }
     }
 
@@ -520,43 +512,47 @@ public sealed partial class GameForm
         Rectangle rect = GetSongPlayButtonBounds(GetSongSelectPanelBounds());
         using var border = new Pen(Color.FromArgb(210, 124, 169, 255), Math.Max(1f, ScaleY(1.2f)));
         using var path = CreateRoundedRect(rect, ScaleY(8f));
+        using var fill = new SolidBrush(enabled ? (UseHighContrast ? Color.White : InterfaceTheme.Accent) : InterfaceTheme.Surface);
+        g.FillPath(fill, path);
         g.DrawPath(border, path);
+        using var primaryText = new SolidBrush(enabled ? InterfaceTheme.Background : InterfaceTheme.Muted);
 
         if (enabled)
         {
-            using var triangleBrush = new SolidBrush(Color.FromArgb(245, 250, 255));
+            using var triangleBrush = new SolidBrush(InterfaceTheme.Background);
             PointF[] triangle =
             [
-                new(rect.Left + rect.Width * 0.39f, rect.Top + rect.Height * 0.36f),
-                new(rect.Left + rect.Width * 0.39f, rect.Top + rect.Height * 0.64f),
-                new(rect.Left + rect.Width * 0.43f, rect.Top + rect.Height * 0.50f),
+                new(rect.Left + rect.Width * 0.34f, rect.Top + rect.Height * 0.36f),
+                new(rect.Left + rect.Width * 0.34f, rect.Top + rect.Height * 0.64f),
+                new(rect.Left + rect.Width * 0.38f, rect.Top + rect.Height * 0.50f),
             ];
             g.FillPolygon(triangleBrush, triangle);
         }
 
-        DrawCentered(g, enabled ? "START" : "NO SONG", font, textBrush, rect.Left + rect.Width / 2, rect.Top + (int)(rect.Height * 0.32f));
+        using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString(enabled ? "START" : "NO SONG", font, primaryText, rect, format);
     }
 
     private void DrawSongFooterOverlay(Graphics g, Font font, Brush brush)
     {
-        FillSongPhotoRect(g, 1456f, 866f, 178f, 36f, 4f, Color.FromArgb(255, 5, 8, 17), Color.Transparent);
-        DrawSongPhotoText(g, "ENTER  START", font, brush, 1462f, 876f, 165f, 22f);
+        FillSongLayoutRect(g, 1456f, 866f, 178f, 36f, 4f, Color.FromArgb(255, 5, 8, 17), Color.Transparent);
+        DrawSongLayoutText(g, "ENTER  START", font, brush, 1430f, 858f, 210f, 44f);
     }
 
-    private Rectangle GetDifficultyPhotoButtonBounds(int index)
+    private Rectangle GetDifficultyChoiceButtonBounds(int index)
     {
         return index switch
         {
-            0 => GetSongSelectPhotoLogicalRect(752f, 618f, 190f, 58f),
-            1 => GetSongSelectPhotoLogicalRect(962f, 618f, 191f, 58f),
-            2 => GetSongSelectPhotoLogicalRect(1174f, 618f, 191f, 58f),
-            _ => GetSongSelectPhotoLogicalRect(1388f, 618f, 195f, 58f),
+            0 => GetSongSelectLayoutLogicalRect(752f, 618f, 190f, 58f),
+            1 => GetSongSelectLayoutLogicalRect(962f, 618f, 191f, 58f),
+            2 => GetSongSelectLayoutLogicalRect(1174f, 618f, 191f, 58f),
+            _ => GetSongSelectLayoutLogicalRect(1388f, 618f, 195f, 58f),
         };
     }
 
-    private void FillSongPhotoRect(Graphics g, float x, float y, float width, float height, float radius, Color fillColor, Color borderColor)
+    private void FillSongLayoutRect(Graphics g, float x, float y, float width, float height, float radius, Color fillColor, Color borderColor)
     {
-        Rectangle rect = GetSongSelectPhotoLogicalRect(x, y, width, height);
+        Rectangle rect = GetSongSelectLayoutLogicalRect(x, y, width, height);
         FillSongLogicalRect(g, rect, ScaleY(radius), fillColor, borderColor);
     }
 
@@ -584,15 +580,15 @@ public sealed partial class GameForm
         }
     }
 
-    private void DrawSongPhotoText(Graphics g, string text, Font font, Brush brush, float x, float y, float width, float height, StringAlignment alignment = StringAlignment.Near)
+    private void DrawSongLayoutText(Graphics g, string text, Font font, Brush brush, float x, float y, float width, float height, StringAlignment alignment = StringAlignment.Near)
     {
-        Rectangle rect = GetSongSelectPhotoLogicalRect(x, y, width, height);
+        Rectangle rect = GetSongSelectLayoutLogicalRect(x, y, width, height);
         DrawSongText(g, text, font, brush, rect.Left, rect.Top, rect.Width, rect.Height, alignment);
     }
 
     private static void DrawSongText(Graphics g, string text, Font font, Brush brush, float x, float y, float width, float height, StringAlignment alignment = StringAlignment.Near)
     {
-        RectangleF rect = new(x, y, width, height);
+        RectangleF rect = new(x, y, width, Math.Max(height, font.GetHeight(g) + 2));
         using var format = new StringFormat
         {
             Trimming = StringTrimming.EllipsisCharacter,
@@ -606,13 +602,13 @@ public sealed partial class GameForm
     private void DrawSongSelectBackground(Graphics g)
     {
         Rectangle layoutRect = new(0, 0, (int)ScaleX(DesignWidth), (int)ScaleY(DesignHeight));
-        using var bgBrush = new LinearGradientBrush(layoutRect, BgColor1, BgColor2, LinearGradientMode.Vertical);
+        using var bgBrush = new SolidBrush(UseHighContrast ? Color.Black : InterfaceTheme.Background);
         g.FillRectangle(bgBrush, layoutRect);
     }
 
     private Rectangle GetSongSelectPanelBounds()
     {
-        return GetSongSelectPhotoLogicalRect(37f, 210f, 1594f, 616f);
+        return GetSongSelectLayoutLogicalRect(37f, 210f, 1594f, 616f);
     }
 
     private void DrawSongSelectPanel(Graphics g, Rectangle bounds)
@@ -636,7 +632,7 @@ public sealed partial class GameForm
 
     private Rectangle GetSongSearchBounds(Rectangle panel)
     {
-        return GetSongSelectPhotoLogicalRect(54f, 228f, 616f, 49f);
+        return GetSongSelectLayoutLogicalRect(54f, 228f, 616f, 49f);
     }
 
     private void DrawSongSearchBox(Graphics g, Rectangle bounds, Brush textBrush)
@@ -673,7 +669,7 @@ public sealed partial class GameForm
 
     private Rectangle GetSongDifficultyBounds(Rectangle panel)
     {
-        return GetSongSelectPhotoLogicalRect(752f, 618f, 614f, 58f);
+        return GetSongSelectLayoutLogicalRect(752f, 618f, 614f, 58f);
     }
 
     private Rectangle GetSongSortButtonBounds(Rectangle panel)
@@ -688,12 +684,12 @@ public sealed partial class GameForm
 
     private Rectangle GetSongRescanButtonBounds(Rectangle panel)
     {
-        return Rectangle.Round(new RectangleF(panel.Left + ScaleX(718f), panel.Top + ScaleY(83f), ScaleX(104f), ScaleY(30f)));
+        return GetLibraryToolBounds(0);
     }
 
     private Rectangle GetSongDetailButtonBounds(Rectangle panel)
     {
-        return Rectangle.Round(new RectangleF(panel.Left + ScaleX(834f), panel.Top + ScaleY(83f), ScaleX(128f), ScaleY(30f)));
+        return GetLibraryToolBounds(1);
     }
 
     private void DrawSongLibraryControls(Graphics g, Rectangle panel, Font font, Brush titleBrush, Brush dimBrush)
@@ -761,7 +757,7 @@ public sealed partial class GameForm
 
     private Rectangle GetSongListBounds(Rectangle panel)
     {
-        return GetSongSelectPhotoLogicalRect(54f, 331f, 616f, 456f);
+        return GetSongSelectLayoutLogicalRect(54f, 331f, 616f, 456f);
     }
 
     private Rectangle GetSongRowBounds(Rectangle listBounds, int visibleRow)
@@ -776,7 +772,7 @@ public sealed partial class GameForm
         for (int i = 0; i < SongRowsPerPage; i++)
         {
             Rectangle rowBounds = GetSongRowBounds(listBounds, i);
-            int songIndex = _songSelectPageIndex * SongRowsPerPage + i;
+            int songIndex = GetSongFirstVisibleIndex() + i;
             SongEntry? song = songIndex >= 0 && songIndex < songs.Length ? songs[songIndex] : null;
             bool selected = songIndex == _songSelectSelectedIndex && song is not null;
             bool hovered = _hoverSongPlayIndex == 100 + i;
@@ -877,17 +873,17 @@ public sealed partial class GameForm
 
     private Rectangle GetSongPrevButtonBounds(Rectangle panel)
     {
-        return GetSongSelectPhotoLogicalRect(324f, 794f, 88f, 38f);
+        return GetSongSelectLayoutLogicalRect(324f, 794f, 88f, 38f);
     }
 
     private Rectangle GetSongNextButtonBounds(Rectangle panel)
     {
-        return GetSongSelectPhotoLogicalRect(574f, 794f, 88f, 38f);
+        return GetSongSelectLayoutLogicalRect(574f, 794f, 88f, 38f);
     }
 
     private Rectangle GetSongPageLabelBounds()
     {
-        return GetSongSelectPhotoLogicalRect(422f, 794f, 142f, 38f);
+        return GetSongSelectLayoutLogicalRect(422f, 794f, 142f, 38f);
     }
 
     private Rectangle GetSongDotsBounds(Rectangle panel)
@@ -951,7 +947,7 @@ public sealed partial class GameForm
 
     private Rectangle GetSongPlayButtonBounds(Rectangle panel)
     {
-        return GetSongSelectPhotoLogicalRect(752f, 714f, 831f, 83f);
+        return GetSongSelectLayoutLogicalRect(752f, 714f, 831f, 83f);
     }
 
     private Rectangle GetSongChartPreviewBounds(Rectangle panel)
@@ -961,7 +957,7 @@ public sealed partial class GameForm
 
     private Rectangle GetSongSelectCloseButtonBounds()
     {
-        return GetSongSelectPhotoLogicalRect(37f, 868f, 142f, 32f);
+        return GetSongSelectLayoutLogicalRect(37f, 868f, 142f, 32f);
     }
 
     private void DrawSongSelectCloseButton(Graphics g, Rectangle bounds, bool hovered)
@@ -982,7 +978,12 @@ public sealed partial class GameForm
 
     private int GetSongSelectHoverCode(Point location)
     {
-        PointF? photoPoint = ToSongSelectPhotoPoint(location);
+        for (int tool = 0; tool < 4; tool++)
+            if (GetLibraryToolBounds(tool).Contains(location)) return 65 + tool;
+        for (int mode = 0; mode < LaneModes.Length; mode++)
+            if (GetLibraryLaneBounds(mode).Contains(location)) return 60 + mode;
+        if (GetLibraryClearFiltersBounds().Contains(location)) return 64;
+        PointF? photoPoint = ToSongSelectLayoutPoint(location);
         if (photoPoint is PointF p)
         {
             if (new RectangleF(37f, 868f, 142f, 32f).Contains(p)) return 0;
@@ -1052,6 +1053,35 @@ public sealed partial class GameForm
         }
 
         int code = GetSongSelectHoverCode(location);
+        if (code is >= 65 and <= 68)
+        {
+            if (code == 65) RescanSongs();
+            if (code == 66) OpenSelectedSongDetail();
+            if (code == 67) StartReplayForSelectedSong();
+            if (code == 68 && GetSelectedSong() is SongEntry song) OpenChartEditor(song);
+            Invalidate();
+            return;
+        }
+        if (code is >= 60 and <= 63)
+        {
+            _laneModeIndex = code - 60;
+            _previewSongKey = string.Empty;
+            _accessibleScreenKey = string.Empty;
+            SaveUserSettings();
+            Invalidate();
+            return;
+        }
+        if (code == 64)
+        {
+            _libraryGenre = _librarySource = string.Empty;
+            _libraryRecent = _songFavoritesOnly = false;
+            _libraryMinLevel = 1; _libraryMaxLevel = 15;
+            _songSelectSelectedIndex = _songSelectPageIndex = _songListFirstIndex = 0;
+            _previewSongKey = _accessibleScreenKey = string.Empty;
+            Invalidate();
+            return;
+        }
+
 
         if (code == 0)
         {
@@ -1080,16 +1110,14 @@ public sealed partial class GameForm
 
         if (code == 20)
         {
-            _songSelectPageIndex = Math.Max(0, _songSelectPageIndex - 1);
-            _songSelectSelectedIndex = _songSelectPageIndex * SongRowsPerPage;
+            MoveSongSelection(-1);
             Invalidate();
             return;
         }
 
         if (code == 21)
         {
-            _songSelectPageIndex = Math.Min(GetSongPageCount() - 1, _songSelectPageIndex + 1);
-            _songSelectSelectedIndex = _songSelectPageIndex * SongRowsPerPage;
+            MoveSongSelection(1);
             Invalidate();
             return;
         }
@@ -1133,7 +1161,7 @@ public sealed partial class GameForm
         if (code >= 100)
         {
             int visibleIndex = code - 100;
-            int absoluteIndex = _songSelectPageIndex * SongRowsPerPage + visibleIndex;
+            int absoluteIndex = GetSongFirstVisibleIndex() + visibleIndex;
             if (GetSongByIndex(absoluteIndex) is not null)
             {
                 _songSelectSelectedIndex = absoluteIndex;

@@ -13,6 +13,26 @@ public sealed partial class GameForm
     private readonly Dictionary<(string SongId, int Difficulty, int Lanes), int> _libraryLevels = [];
     private static readonly Dictionary<string, string> LibraryStatus = new(StringComparer.Ordinal);
 
+    private string BuildActiveFiltersDescription()
+    {
+        var parts = new List<string>();
+        if (_libraryGenre.Length > 0) parts.Add(_libraryGenre);
+        if (_librarySource.Length > 0) parts.Add(_librarySource);
+        if (_songFavoritesOnly) parts.Add("Favorites");
+        if (_libraryRecent) parts.Add("Last 30 days");
+        if (_libraryMinLevel != 1 || _libraryMaxLevel != 15) parts.Add($"Lv.{_libraryMinLevel}–{_libraryMaxLevel}");
+        return parts.Count == 0 ? "Choose a track, then select your difficulty." : string.Join(" · ", parts);
+    }
+
+    private string BuildFilterSummary()
+    {
+        int count = (string.IsNullOrEmpty(_libraryGenre) ? 0 : 1)
+            + (string.IsNullOrEmpty(_librarySource) ? 0 : 1)
+            + (_songFavoritesOnly ? 1 : 0) + (_libraryRecent ? 1 : 0)
+            + (_libraryMinLevel != 1 || _libraryMaxLevel != 15 ? 1 : 0);
+        return count == 0 ? "FILTERS  F2" : $"FILTERS ({count})  F2";
+    }
+
     private void OpenLibraryFilters()
     {
         SongEntry[] songs = GetCurrentSongs();
@@ -56,6 +76,14 @@ public sealed partial class GameForm
             if (min.Value > max.Value) { MessageBox.Show(dialog, "최소 레벨이 최대 레벨보다 큽니다."); return; }
             dialog.DialogResult = DialogResult.OK;
         };
+        dialog.FormBorderStyle = FormBorderStyle.None;
+        dialog.StartPosition = FormStartPosition.Manual;
+        Rectangle owner = RectangleToScreen(ClientRectangle);
+        dialog.Bounds = new Rectangle(owner.Right - Math.Min(520, owner.Width - 48) - 24,
+            owner.Top + 100, Math.Min(520, owner.Width - 48), Math.Min(420, owner.Height - 124));
+        dialog.ShowInTaskbar = false;
+        layout.Padding = new Padding(24);
+        InterfaceTheme.StyleControls(dialog);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         string? selected = GetSelectedSong()?.SongId;
         _libraryGenre = genre.SelectedIndex == 0 ? string.Empty : genre.Text;

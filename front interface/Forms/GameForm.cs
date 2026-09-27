@@ -720,6 +720,7 @@ public sealed partial class GameForm : Form
                 if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.Back)
                 {
                     e.SuppressKeyPress = true;
+                    CancelSettingsDraft();
                     _screen = UiScreen.MainMenu;
                     Invalidate();
                 }
@@ -2398,17 +2399,15 @@ public sealed partial class GameForm : Form
 
         DrawRhythmBrand(g, MenuX(32f), MenuY(30f), brandFont, dimBrush);
         Rectangle tutorialBounds = GetTutorialBounds();
-        if (_hoverMenuIndex == 4) g.FillRectangle(Brushes.DarkSlateBlue, tutorialBounds);
-        g.DrawRectangle(Pens.SlateGray, tutorialBounds);
-        g.DrawString("TUTORIAL - F1", smallFont, textBrush, tutorialBounds.Left + MenuS(10f), tutorialBounds.Top + MenuS(10f));
+        DrawConsoleButton(g, tutorialBounds, "First play tutorial · F1", smallFont, _hoverMenuIndex == 4);
         DrawMenuGearButton(g, GetMenuTopSettingsButtonBounds(), _hoverMenuIndex == 0, accent);
 
         float centerX = MenuX(MainMenuDesignWidth / 2f);
         DrawGlowingSpacedText(g, "MuWorld", titleFont, textBrush, centerX, MenuY(205f), MenuS(17f));
         DrawMenuTagline(g, centerX, MenuY(315f) + 5f, tagFont, dimBrush, accent);
 
-        DrawPlayMenuButton(g, GetMenuActionButtonBounds(1), _hoverMenuIndex == 1, menuFont, accent);
-        DrawSecondaryMenuRow(g, GetMenuActionButtonBounds(3), "RESTART", _hoverMenuIndex == 3, menuFont, accent, DrawRestartGlyph);
+        DrawConsoleButton(g, GetMenuActionButtonBounds(1), "Song select", menuFont, _hoverMenuIndex == 1, true);
+        DrawConsoleButton(g, GetMenuActionButtonBounds(3), "Restart application", smallFont, _hoverMenuIndex == 3);
         DrawPlayerBadge(g, _hoverMenuIndex == 2, smallFont, dimBrush, blueBrush);
         DrawQuitHint(g, GetExitButtonBounds(), _isExitHovered, smallFont, dimBrush);
     }
@@ -3592,7 +3591,7 @@ public sealed partial class GameForm : Form
         Font artistFont = _renderResources.Font("Segoe UI", Math.Max(8f, 14f * s), FontStyle.Regular);
         Font labelFont = _renderResources.Font("Segoe UI", Math.Max(7f, 12f * s), FontStyle.Regular);
 
-        DrawSpacedString(g, "MuWorld", logoFont, titleBrush, ClientSize.Width / 2f, 28f * s, 10f * s, centered: true);
+        DrawSpacedString(g, $"{LaneCount}K", logoFont, titleBrush, ClientSize.Width / 2f, 28f * s, 0, centered: true);
 
         Rectangle art = Rectangle.Round(GetSongArtworkBounds());
         DrawSongArtwork(g, art, song);
@@ -3711,62 +3710,36 @@ public sealed partial class GameForm : Form
     private void DrawSpeedPanel(Graphics g, RectangleF bounds)
     {
         float s = GameScale;
-        using var path = CreateRoundedRect(Rectangle.Round(bounds), 12f * s);
-        using var fill = new SolidBrush(Color.FromArgb(74, 7, 9, 20));
-        using var border = new Pen(Color.FromArgb(124, 158, 144, 230), Math.Max(1f, 1.2f * s));
-        g.FillPath(fill, path);
-        g.DrawPath(border, path);
-
-        Font label = _renderResources.Font("Segoe UI", Math.Max(8f, 14f * s), FontStyle.Regular);
-        Font value = _renderResources.Font("Segoe UI Light", Math.Max(26f, 42f * s), FontStyle.Regular);
-        SolidBrush title = _renderResources.Brush(Color.FromArgb(234, 242, 245, 255));
-        DrawSpacedString(g, "HI-SPEED", label, title, bounds.Left + bounds.Width / 2f, bounds.Top + 22f * s, 5f * s, centered: true);
-        RectangleF valueBounds = GetSpeedValueBounds(bounds);
-        DrawCentered(g, $"{EffectiveSpeedMultiplier:F1}x", value, title, valueBounds.Left + valueBounds.Width / 2f, valueBounds.Top);
-
-        RectangleF minusButton = GetSpeedMinusButtonBounds(bounds);
-        RectangleF plusButton = GetSpeedPlusButtonBounds(bounds);
-        DrawMiniSpeedButton(g, minusButton, "-");
-        DrawMiniSpeedButton(g, plusButton, "+");
-
-        using var tickPen = new Pen(Color.FromArgb(128, 215, 224, 255), Math.Max(1f, s));
-        RectangleF railBounds = GetSpeedRailBounds(bounds);
-        float railLeft = railBounds.Left;
-        float railRight = railBounds.Right;
-        float railY = railBounds.Top + railBounds.Height / 2f;
-        for (int i = 0; i <= 12; i++)
-        {
-            float x = railLeft + (railRight - railLeft) * i / 12f;
-            float tick = i == 6 ? 13f * s : 7f * s;
-            g.DrawLine(tickPen, x, railY - tick / 2f, x, railY + tick / 2f);
-        }
-        using var knobPen = new Pen(Color.FromArgb(220, GetAccentColor()), Math.Max(2f, 2.4f * s));
-        float knobX = railLeft + (railRight - railLeft) * Math.Clamp((EffectiveSpeedMultiplier - 0.5f) / 2.0f, 0f, 1f);
-        g.DrawLine(knobPen, knobX, railY - 14f * s, knobX, railY + 14f * s);
+        Font label = _renderResources.Font("Segoe UI", Math.Max(9f, 15f * s), FontStyle.Regular);
+        SolidBrush text = _renderResources.Brush(UseHighContrast ? Color.White : InterfaceTheme.Muted);
+        using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString($"SPEED  {EffectiveSpeedMultiplier:F1}×", label, text, GetSpeedValueBounds(bounds), format);
+        DrawMiniSpeedButton(g, GetSpeedMinusButtonBounds(bounds), "−");
+        DrawMiniSpeedButton(g, GetSpeedPlusButtonBounds(bounds), "+");
     }
 
     private RectangleF GetSpeedPanelBounds()
     {
         float s = GameScale;
-        return new RectangleF(42f * s, ClientSize.Height * 0.37f, 300f * s, 198f * s);
+        return new RectangleF(42f * s, ClientSize.Height * 0.37f, 300f * s, 72f * s);
     }
 
     private RectangleF GetSpeedValueBounds(RectangleF panel)
     {
         float s = GameScale;
-        return new RectangleF(panel.Left + 72f * s, panel.Top + 58f * s, panel.Width - 144f * s, 52f * s);
+        return new RectangleF(panel.Left + 72f * s, panel.Top, panel.Width - 144f * s, panel.Height);
     }
 
     private RectangleF GetSpeedMinusButtonBounds(RectangleF panel)
     {
         float s = GameScale;
-        return new RectangleF(panel.Left + 22f * s, panel.Bottom - 66f * s, 48f * s, 44f * s);
+        return new RectangleF(panel.Left + 22f * s, panel.Top + 14f * s, 48f * s, 44f * s);
     }
 
     private RectangleF GetSpeedPlusButtonBounds(RectangleF panel)
     {
         float s = GameScale;
-        return new RectangleF(panel.Right - 70f * s, panel.Bottom - 66f * s, 48f * s, 44f * s);
+        return new RectangleF(panel.Right - 70f * s, panel.Top + 14f * s, 48f * s, 44f * s);
     }
 
     private RectangleF GetSpeedRailBounds(RectangleF panel)
@@ -4531,7 +4504,7 @@ public sealed partial class GameForm : Form
         return index switch
         {
             1 => MenuRect(584f, 412f, 512f, 100f),
-            3 => MenuRect(615f, 552f, 450f, 58f),
+            3 => MenuRect(615f, 656f, 450f, 48f),
             _ => Rectangle.Empty,
         };
     }
@@ -4548,31 +4521,39 @@ public sealed partial class GameForm : Form
 
     private void DrawMainMenuBackground(Graphics g, Rectangle bounds)
     {
-        using (var baseBrush = new LinearGradientBrush(bounds, Color.FromArgb(3, 6, 12), Color.FromArgb(8, 12, 26), LinearGradientMode.Vertical))
-            g.FillRectangle(baseBrush, bounds);
+        using var background = new LinearGradientBrush(bounds,
+            UseHighContrast ? Color.Black : InterfaceTheme.Background,
+            UseHighContrast ? Color.Black : InterfaceTheme.Surface, LinearGradientMode.Vertical);
+        g.FillRectangle(background, bounds);
+        using var line = new Pen(UseHighContrast ? Color.White : InterfaceTheme.Border);
+        g.DrawLine(line, bounds.Left + MenuS(32), bounds.Bottom - MenuS(64),
+            bounds.Right - MenuS(32), bounds.Bottom - MenuS(64));
+    }
 
-        using (var vignette = new GraphicsPath())
-        {
-            vignette.AddEllipse(MenuX(-72f), MenuY(-84f), MenuS(1824f), MenuS(1094f));
-            using var shade = new PathGradientBrush(vignette)
-            {
-                CenterColor = Color.FromArgb(0, 0, 0, 0),
-                SurroundColors = [Color.FromArgb(128, 0, 0, 0)]
-            };
-            g.FillRectangle(shade, bounds);
-        }
+    private static void DrawContainedText(Graphics g, string text, Font font, Brush brush, RectangleF bounds,
+        StringAlignment alignment = StringAlignment.Near)
+    {
+        SizeF measured = g.MeasureString(text, font, int.MaxValue, StringFormat.GenericTypographic);
+        float ratio = Math.Min(1f, Math.Min(bounds.Width / Math.Max(1, measured.Width + 4),
+            bounds.Height / Math.Max(1, font.GetHeight(g) + 2)));
+        using var fitted = new Font(font.FontFamily, Math.Max(1, font.Size * ratio), font.Style);
+        using var format = new StringFormat(StringFormat.GenericTypographic) {
+            Alignment = alignment, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap };
+        g.DrawString(text, fitted, brush, bounds, format);
+    }
 
-        using (var hazeBrush = new LinearGradientBrush(
-            MenuRect(0f, 780f, MainMenuDesignWidth, 118f),
-            Color.FromArgb(0, 20, 35, 80),
-            Color.FromArgb(60, 58, 70, 180),
-            LinearGradientMode.Vertical))
-        {
-            g.FillRectangle(hazeBrush, MenuX(0f), MenuY(780f), MenuS(MainMenuDesignWidth), MenuS(118f));
-        }
-
-        DrawMenuTexture(g, bounds);
-        DrawMenuBottomGlow(g);
+    private void DrawConsoleButton(Graphics g, Rectangle bounds, string text, Font font, bool hover, bool primary = false)
+    {
+        Color accent = UseHighContrast ? Color.White : InterfaceTheme.Accent;
+        using var path = CreateRoundedRect(bounds, Math.Max(4, MenuS(8)));
+        using var fill = new SolidBrush(primary ? accent : hover ? InterfaceTheme.Raised : InterfaceTheme.Surface);
+        using var border = new Pen(hover || primary ? accent : InterfaceTheme.Border, Math.Max(1, MenuS(1)));
+        using var ink = new SolidBrush(primary ? InterfaceTheme.Background : Color.White);
+        using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
+        g.FillPath(fill, path);
+        g.DrawPath(border, path);
+        DrawContainedText(g, text, font, ink, RectangleF.Inflate(bounds, -6, -3), StringAlignment.Center);
     }
 
     private void DrawMenuTexture(Graphics g, Rectangle bounds)
@@ -4632,7 +4613,7 @@ public sealed partial class GameForm : Form
             g.DrawLine(pen, bx, barY + (MenuS(48f) - heights[i]) / 2f, bx, barY + (MenuS(48f) + heights[i]) / 2f);
         }
 
-        DrawSpacedString(g, "RHYTHM GAME", font, brush, x + MenuS(52f), y + MenuS(11f), MenuS(8.6f), centered: false);
+        DrawSpacedString(g, "MUWORLD", font, brush, x + MenuS(52f), y + MenuS(11f), MenuS(8.6f), centered: false);
     }
 
     private void DrawGlowingSpacedText(Graphics g, string text, Font font, Brush brush, float centerX, float y, float spacing)
@@ -4836,14 +4817,9 @@ public sealed partial class GameForm : Form
 
     private static void DrawSpacedString(Graphics g, string text, Font font, Brush brush, float x, float y, float spacing, bool centered)
     {
-        float width = MeasureSpacedString(g, text, font, spacing);
-        float cursor = centered ? x - width / 2f : x;
-        foreach (char ch in text)
-        {
-            string part = ch.ToString();
-            g.DrawString(part, font, brush, cursor, y);
-            cursor += g.MeasureString(part, font).Width + spacing;
-        }
+        using var format = new StringFormat(StringFormat.GenericTypographic);
+        format.Alignment = centered ? StringAlignment.Center : StringAlignment.Near;
+        g.DrawString(text, font, brush, new PointF(x, y), format);
     }
 
     private void DrawFittedSpacedString(
@@ -4872,11 +4848,7 @@ public sealed partial class GameForm : Form
 
     private static float MeasureSpacedString(Graphics g, string text, Font font, float spacing)
     {
-        float width = 0f;
-        foreach (char ch in text)
-            width += g.MeasureString(ch.ToString(), font).Width + spacing;
-
-        return text.Length == 0 ? 0f : width - spacing;
+        return g.MeasureString(text, font, int.MaxValue, StringFormat.GenericTypographic).Width;
     }
 
     private Rectangle GetExitButtonBounds()
@@ -5013,7 +4985,11 @@ public sealed partial class GameForm : Form
 
     private void LoadUserSettings()
     {
-        UserSettings settings = _settingsStore.Load();
+        ApplyUserSettingsSnapshot(_settingsStore.Load());
+    }
+
+    private void ApplyUserSettingsSnapshot(UserSettings settings)
+    {
         _bgmVolume = Math.Clamp(settings.BgmVolume, 0, 100);
         _previewVolume = Math.Clamp(settings.PreviewVolume, 0, 100);
         _sfxVolume = Math.Clamp(settings.SfxVolume, 0, 100);
@@ -5049,6 +5025,7 @@ public sealed partial class GameForm : Form
 
     private void SaveUserSettings()
     {
+        if (_settingsDraft is not null) return;
         UserSettings snapshot = CreateUserSettingsSnapshot();
         lock (_settingsSaveLock)
         {
@@ -5611,7 +5588,6 @@ public sealed partial class GameForm : Form
             _coverImages.Dispose();
             _gameBgaImage?.Dispose();
             _gameBackgroundCache?.Dispose();
-            _songSelectPhoto?.Dispose();
         }
         base.Dispose(disposing);
     }

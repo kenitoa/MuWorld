@@ -247,7 +247,6 @@ C:\Users\abc20\Desktop\만든 것들\MuWorld\front interface\obj\Release\net9.0-
 C:\Users\abc20\Desktop\만든 것들\MuWorld\front interface\obj\Release\net9.0-windows\RhythmGame.genruntimeconfig.cache
 C:\Users\abc20\Desktop\만든 것들\MuWorld\front interface\obj\Release\net9.0-windows\ref\game start.dll
 C:\Users\abc20\Documents\GitHub\MuWorld\front interface\bin\Release\net9.0-windows\NoteLane\default.bms
-C:\Users\abc20\Documents\GitHub\MuWorld\front interface\bin\Release\net9.0-windows\Assets\play-interface.png
 C:\Users\abc20\Documents\GitHub\MuWorld\front interface\bin\Release\net9.0-windows\Songs\InGameBGM\Original\Akina Drift.wav
 C:\Users\abc20\Documents\GitHub\MuWorld\front interface\bin\Release\net9.0-windows\Songs\InGameBGM\Original\bastard life.wav
 C:\Users\abc20\Documents\GitHub\MuWorld\front interface\bin\Release\net9.0-windows\Songs\InGameBGM\Original\Dark Tunnel Pattern.wav

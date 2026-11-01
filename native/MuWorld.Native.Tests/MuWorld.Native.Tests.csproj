@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../MuWorld.Native/Core/Models.cs" Link="Core/Models.cs" />
+    <Compile Include="../MuWorld.Native/Core/RhythmEngine.cs" Link="Core/RhythmEngine.cs" />
+    <Compile Include="../MuWorld.Native/Core/Analytics.cs" Link="Core/Analytics.cs" />
+    <Compile Include="../MuWorld.Native/Core/LocalStore.cs" Link="Core/LocalStore.cs" />
+    <Compile Include="../MuWorld.Native/Audio/Synthesizer.cs" Link="Audio/Synthesizer.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>MuWorld</AssemblyName>
+    <RootNamespace>MuWorld.Native</RootNamespace>
+    <ApplicationIcon>../../assets/icon.ico</ApplicationIcon>
+    <Version>0.2.0</Version>
+    <Description>MuWorld native Windows rhythm game</Description>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <Content Include="Assets/content.json" CopyToOutputDirectory="PreserveNewest" />
+    <Resource Include="Assets/Fonts/*.otf" />
+    <Content Include="Assets/Fonts/OFL.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets/Licenses/*" CopyToOutputDirectory="PreserveNewest" />
+    <Resource Include="../../assets/icon.ico" Link="Assets/icon.ico" />
+  </ItemGroup>
+</Project>

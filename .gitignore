@@ -1,0 +1,10 @@
+node_modules/
+release/
+artifacts/
+dist/
+*.log
+.DS_Store
+.tools/
+**/bin/
+**/obj/
+native-release/
